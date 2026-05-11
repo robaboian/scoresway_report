@@ -1203,9 +1203,22 @@ for idx, quals in df["qualifiers"].apply(to_list_safe).items():
             df.at[idx, col_bool] = True
 
 
-# Opcional: convertir columnas de valores a numérico (si quedaron strings numéricas)
+# Opcional: convertir columnas de valores a numérico cuando la columna sea realmente numérica.
+# En pandas nuevo, errors="ignore" puede fallar; por eso usamos coerce solo para testear
+# y convertimos únicamente si no destruye valores de texto.
 for col in created_value_cols:
-    df[col] = pd.to_numeric(df[col], errors="ignore")  # ya intentamos arriba; esto sólo reafirma
+    serie_original = df[col]
+    mask_con_dato = serie_original.notna()
+
+    if not mask_con_dato.any():
+        continue
+
+    serie_convertida = pd.to_numeric(serie_original, errors="coerce")
+
+    # Convertir solo si todos los valores existentes pudieron pasar a número.
+    # Si hay valores de texto, dejamos la columna como estaba.
+    if serie_convertida[mask_con_dato].notna().all():
+        df[col] = serie_convertida
 
 # Listo: df ahora tiene columnas nuevas como:
 # - isLaunch (True/False)
