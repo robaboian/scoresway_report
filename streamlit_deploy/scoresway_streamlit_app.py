@@ -41,7 +41,7 @@ Esta aplicación permite generar reportes visuales a partir de datos de Scoreswa
 
 La base del código fue desarrollada por @adnaaan433 para trabajar con datos de WhoScored.
 En esta versión, adapté el flujo para utilizarlo con partidos de Scoresway, donde actualmente está disponible el eventing de la Liga Argentina.
-Mi agradecimiento a LanusStats por facilitar la extracción de datos de 365Scores como a @Vdot_Spain por su app https://vdotspain.shinyapps.io/Eventing2csv/ que sirvió de inspiración de generar esta adatpación para el usuario.
+Mi agradecimiento a LanusStats por facilitar la extracción de datos de 365Scores como a @Vdot_Spain por su aplicación que sirvió de inspiración de generar esta adatpación para el usuario.
 
 Modo de uso:
 - Carga los links de 365Scores y Scoresway en cada uno de sus campos.
@@ -58,6 +58,7 @@ Links y otras cosas:
 - Contacto: @robaboian_ (X)
 - Github de @adnaaan433: https://github.com/adnaaan433
 - Github de @LanusStats: https://github.com/federicorabanos/LanusStats
+- Aplicación de @Vdot_Spain: https://vdotspain.shinyapps.io/Eventing2csv/
 
 """
 # Celdas visibles importadas desde "Copia de scoresway.ipynb".
