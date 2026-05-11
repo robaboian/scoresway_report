@@ -51,6 +51,15 @@ Modo de uso:
 - Genera y descarga los dos reportes colectivos.
 
 """
+
+TEXTO = """
+
+Links y otras cosas:
+- Contacto: @robaboian_ (X)
+- Github de @adnaaan433: https://github.com/adnaaan433
+- Github de @LanusStats: https://github.com/federicorabanos/LanusStats
+
+"""
 # Celdas visibles importadas desde "Copia de scoresway.ipynb".
 # Podes buscar y editar aca textos, titulos, labels y bloques del reporte.
 NOTEBOOK_CODE_CELLS: list[tuple[int, str]] = [
@@ -7304,6 +7313,8 @@ def main() -> None:
         st.session_state["last_reports"] = reports
 
     _show_reports(reports)
+
+    st.markdown(TEXTO)
 
 
 if __name__ == "__main__":
