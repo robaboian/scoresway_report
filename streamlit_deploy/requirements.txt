@@ -16,3 +16,4 @@ highlight-text
 scikit-learn
 scipy
 openpyxl
+IPython
