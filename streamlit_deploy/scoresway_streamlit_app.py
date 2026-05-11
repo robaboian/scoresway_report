@@ -55,7 +55,7 @@ Modo de uso:
 TEXTO = """
 
 Links y otras cosas:
-- Contacto: @robaboian_ (X)
+- Contactame! https://x.com/robaboian_ 
 - Github de @adnaaan433: https://github.com/adnaaan433
 - Github de @LanusStats: https://github.com/federicorabanos/LanusStats
 - Aplicación de @Vdot_Spain: https://vdotspain.shinyapps.io/Eventing2csv/
