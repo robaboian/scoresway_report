@@ -45,7 +45,7 @@ Mi agradecimiento también a LanusStats por facilitar la extracción de datos de
 
 Modo de uso:
 - Carga los links de 365Scores y Scoresway en cada uno de sus campos.
-- Formato: https://www.scoresway.com/en_GB/soccer/liga-profesional-argentina-2026/8v84l9nq3d5t0j4gb781i3llg/match/view/bhj87yt1cpb4yscsqvxpfq044/match-summary | https://www.scoresway.com/en_GB/soccer/liga-profesional-argentina-2026/8v84l9nq3d5t0j4gb781i3llg/match/view/bhj87yt1cpb4yscsqvxpfq044/match-summary
+- Los campos muestran un link de muestra para que se vea el formato esperado.
 - Elegi los colores de cada equipo.
 - Completa el subtitulo del reporte.
 - Genera y descarga los dos reportes colectivos.
@@ -7237,11 +7237,11 @@ def main() -> None:
 
     url_365scores = st.text_input(
         "Link 365Scores",
-        placeholder="https://www.365scores.com/es/football/match/...#id=...",
+        placeholder="https://www.365scores.com/es/football/match/liga-profesional-72/argentinos-juniors-lanus-869-871-72#id=4710402",
     )
     url_scoresway = st.text_input(
         "Link Scoresway",
-        placeholder="https://www.scoresway.com/en_GB/soccer/.../match/view/.../match-summary",
+        placeholder="https://www.scoresway.com/en_GB/soccer/liga-profesional-argentina-2026/8v84l9nq3d5t0j4gb781i3llg/match/view/bgxpwu2xbgue9v5iutmqtwnx0/match-summary",
     )
 
     col_1, col_2, col_3 = st.columns([1, 1, 1])
