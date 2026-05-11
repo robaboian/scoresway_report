@@ -16,7 +16,7 @@ APP_DIR = Path(__file__).resolve().parent
 RESOURCE_FILES = ("typeId.xlsx", "qualifiers.csv", "xT_Grid.csv")
 REPORT_FILES = ("Match_Report_1.png", "Match_Report.png")
 FINAL_CELL_INDEX = 65
-DEFAULT_SELENIUM_WAIT = 12
+DEFAULT_SELENIUM_WAIT = 25
 PROGRESS_MARKER = "__SCORESWAY_PROGRESS__"
 PROGRESS_LABELS = [
     (0, "Cargando librerias y datos de 365Scores"),
@@ -98,23 +98,67 @@ from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 
+try:
+    from pyvirtualdisplay import Display
+except Exception:
+    Display = None
 
-def crear_driver_scoresway():
+
+_VIRTUAL_DISPLAY = None
+
+
+def iniciar_virtual_display():
+    """
+    En Streamlit Cloud no hay pantalla real.
+    Xvfb crea una pantalla virtual para correr Chrome NO-headless.
+    """
+    global _VIRTUAL_DISPLAY
+
+    if os.environ.get("DISPLAY"):
+        return
+
+    if Display is None:
+        raise RuntimeError(
+            "pyvirtualdisplay no esta instalado. Agrega pyvirtualdisplay a requirements.txt "
+            "y xvfb a packages.txt."
+        )
+
+    if _VIRTUAL_DISPLAY is None:
+        _VIRTUAL_DISPLAY = Display(visible=0, size=(1400, 1000))
+        _VIRTUAL_DISPLAY.start()
+
+
+def crear_driver_scoresway(headless=False):
     """
     Crea un ChromeDriver compatible con Streamlit Cloud.
 
     Importante:
-    - NO usa webdriver-manager, porque en cloud puede descargar un driver viejo/incompatible.
+    - NO usa webdriver-manager.
     - Usa chromium/chromedriver instalados desde packages.txt.
-    - Fuerza headless porque Streamlit Cloud no tiene interfaz grafica.
+    - Si headless=False, usa Xvfb para simular pantalla en Streamlit Cloud.
     """
+    if not headless:
+        iniciar_virtual_display()
+
     chrome_options = Options()
-    chrome_options.add_argument("--headless=new")
+
+    if headless:
+        chrome_options.add_argument("--headless=new")
+
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--window-size=1400,1000")
     chrome_options.add_argument("--remote-debugging-port=9222")
+    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+    chrome_options.add_argument("--disable-extensions")
+    chrome_options.add_argument("--disable-infobars")
+    chrome_options.add_argument("--lang=en-US,en")
+    chrome_options.add_argument(
+        "--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/147.0.0.0 Safari/537.36"
+    )
     chrome_options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
 
     chromium_path = (
@@ -134,10 +178,27 @@ def crear_driver_scoresway():
             "En Streamlit Cloud, revisa que packages.txt tenga chromium y chromium-driver."
         )
 
-    return webdriver.Chrome(
+    driver = webdriver.Chrome(
         service=Service(chromedriver_path),
         options=chrome_options,
     )
+
+    try:
+        driver.execute_cdp_cmd(
+            "Page.addScriptToEvaluateOnNewDocument",
+            {
+                "source": """
+                    Object.defineProperty(navigator, 'webdriver', {
+                        get: () => undefined
+                    });
+                """
+            },
+        )
+        driver.execute_cdp_cmd("Network.enable", {})
+    except Exception:
+        pass
+
+    return driver
 
 # ============================================================
 # VISUALIZACIÓN
@@ -408,9 +469,9 @@ def obtener_callback_matchstats(info_formations, partido_id=None):
     (
         7,
         r'''
-def obtener_info_api_player_stats_desde_network(url_player_stats, esperar=12, headless=True):
-    # En Streamlit Cloud debe correr siempre en headless y usando el chromedriver del sistema.
-    driver = crear_driver_scoresway()
+def obtener_info_api_player_stats_desde_network(url_player_stats, esperar=25, headless=False):
+    # En Streamlit Cloud puede correr NO-headless con Xvfb para que Scoresway cargue igual que en local.
+    driver = crear_driver_scoresway(headless=headless)
 
     try:
         driver.get(url_player_stats)
@@ -513,9 +574,9 @@ def obtener_info_api_player_stats_desde_network(url_player_stats, esperar=12, he
     (
         8,
         r'''
-def obtener_info_api_formations_desde_network(url_formations, esperar=12, headless=True):
-    # En Streamlit Cloud debe correr siempre en headless y usando el chromedriver del sistema.
-    driver = crear_driver_scoresway()
+def obtener_info_api_formations_desde_network(url_formations, esperar=25, headless=False):
+    # En Streamlit Cloud puede correr NO-headless con Xvfb para que Scoresway cargue igual que en local.
+    driver = crear_driver_scoresway(headless=headless)
 
     try:
         driver.get(url_formations)
@@ -620,8 +681,8 @@ print("url_player_stats:", url_player_stats)
 
 info_player_stats = obtener_info_api_player_stats_desde_network(
     url_player_stats,
-    esperar=12,
-    headless=True
+    esperar=25,
+    headless=False
 )
 
 sdapi_outlet_key = info_player_stats["sdapi_outlet_key"]
@@ -756,8 +817,8 @@ def descargar_json_matchstats_formations(
         r'''
 info_formations = obtener_info_api_formations_desde_network(
     url_formations=url_formations,
-    esperar=12,
-    headless=True
+    esperar=25,
+    headless=False
 )
 
 json_matchstats = descargar_json_matchstats_formations(
@@ -6904,11 +6965,10 @@ def _patch_report_subtitles(source: str, subtitle: str) -> str:
 
 
 def _patch_runtime_options(source: str, selenium_wait: int, headless: bool) -> str:
-    # Streamlit Cloud no tiene interfaz grafica: Selenium debe correr en headless.
+    # Por defecto usamos Chrome NO-headless con Xvfb, porque Scoresway puede no exponer endpoints en headless.
     patched = source
-    patched = re.sub(r"esperar=12", f"esperar={selenium_wait}", patched)
-    patched = re.sub(r"headless=False", "headless=True", patched)
-    patched = re.sub(r"headless=True", "headless=True", patched)
+    patched = re.sub(r"esperar=12|esperar=25", f"esperar={selenium_wait}", patched)
+    patched = re.sub(r"headless=(True|False)", f"headless={headless}", patched)
     return patched
 
 
@@ -7106,14 +7166,14 @@ def _run_report_job_with_retry(
 
         log_placeholder.warning(
             "Scoresway no expuso los endpoints en el primer intento. "
-            "Reintentando en headless con mas tiempo de espera..."
+            "Reintentando con Chrome NO-headless via Xvfb y mas tiempo de espera..."
         )
 
         return _run_report_job(
             url_365scores=url_365scores,
             url_scoresway=url_scoresway,
-            selenium_wait=max(selenium_wait + 8, 20),
-            headless=True,
+            selenium_wait=max(selenium_wait + 12, 35),
+            headless=False,
             home_color=home_color,
             away_color=away_color,
             subtitle=subtitle,
@@ -7170,7 +7230,11 @@ def main() -> None:
     with col_2:
         away_color = st.color_picker("Color visitante", "#00a0de")
     with col_3:
-        headless = st.toggle("Chrome headless", value=True)
+        headless = st.toggle(
+            "Chrome headless",
+            value=False,
+            help="Dejalo apagado en Streamlit Cloud: usa Xvfb para correr Chrome como no-headless."
+        )
 
     subtitle = st.text_input(
         "Subtitulo",
