@@ -55,10 +55,10 @@ Modo de uso:
 TEXTO = """
 
 Links y otras cosas:
-- Contactame! (https://x.com/robaboian_)
-- Github de @adnaaan433: https://github.com/adnaaan433
-- Github de @LanusStats: https://github.com/federicorabanos/LanusStats
-- Aplicación de @Vdot_Spain: https://vdotspain.shinyapps.io/Eventing2csv/
+- Contactame! [@robaboian](https://x.com/robaboian_)
+- Github de @adnaaan433: [github.com/adnaaan433](https://github.com/adnaaan433)
+- Github de @LanusStats: [LanusStats](https://github.com/federicorabanos/LanusStats)
+- Aplicación de @Vdot_Spain: [Eventing2csv](https://vdotspain.shinyapps.io/Eventing2csv/)
 
 """
 # Celdas visibles importadas desde "Copia de scoresway.ipynb".
