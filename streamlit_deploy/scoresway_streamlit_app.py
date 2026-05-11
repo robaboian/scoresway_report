@@ -83,6 +83,13 @@ import numpy as np
 import pandas as pd
 from unidecode import unidecode
 
+
+def limpiar_nombre_safe(x):
+    """Normaliza nombres sin romper cuando vienen NaN, None o valores no-texto."""
+    if pd.isna(x):
+        return ""
+    return unidecode(str(x))
+
 # ============================================================
 # REQUESTS / SCRAPING
 # ============================================================
@@ -1528,8 +1535,7 @@ df['pass_or_carry_angle'] = np.degrees(np.arctan2(df['endY'] - df['y'], df['endX
 df = df.rename(columns={
     "playerName": "name"})
 
-df['name'] = df['name'].astype(str)
-df['name'] = df['name'].apply(unidecode)
+df['name'] = df['name'].apply(limpiar_nombre_safe)
 ''',
     ),
     (
@@ -1771,7 +1777,7 @@ def get_passes_between_df(teamName, passes_df, players_df):
         average_locs_and_count_df["positionSide"] = np.nan
 
     average_locs_and_count_df = average_locs_and_count_df.set_index("playerId")
-    average_locs_and_count_df["name"] = average_locs_and_count_df["name"].astype(str).apply(unidecode)
+    average_locs_and_count_df["name"] = average_locs_and_count_df["name"].apply(limpiar_nombre_safe)
 
     # Passes between (min/max sin floats)
     passes_player_ids_df = passes_df.loc[:, ["index", "playerId", "receiver", "teamName"]].copy()
@@ -2408,7 +2414,7 @@ def procesar_shots_365scores(
         shots["playerId"].astype(str)
     )
 
-    shots["playerName"] = shots["playerName"].astype(str).apply(unidecode)
+    shots["playerName"] = shots["playerName"].apply(limpiar_nombre_safe)
     shots["jerseyNumber"] = shots["jerseyNumber_365"]
 
     # ------------------------------------------------------------
@@ -2601,7 +2607,7 @@ shots_df["expectedGoalsOnTarget"] = shots_df["expectedGoalsOnTarget"].fillna(0)
 # 4. Limpiar nombres de jugadores
 # ------------------------------------------------------------
 
-shots_df["playerName"] = shots_df["playerName"].astype(str).apply(unidecode)
+shots_df["playerName"] = shots_df["playerName"].apply(limpiar_nombre_safe)
 
 # ------------------------------------------------------------
 # 5. Normalizar tipos
@@ -2719,7 +2725,7 @@ shots_df["xgot"] = shots_df["expectedGoalsOnTarget"]
 # 5. Limpiar nombres de jugadores
 # ------------------------------------------------------------
 
-shots_df["playerName"] = shots_df["playerName"].astype(str).apply(unidecode)
+shots_df["playerName"] = shots_df["playerName"].apply(limpiar_nombre_safe)
 
 # ------------------------------------------------------------
 # 6. Agregar equipo rival
