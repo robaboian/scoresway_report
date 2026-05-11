@@ -45,7 +45,7 @@ En esta versión, adapté el flujo para utilizarlo con partidos de Scoresway, do
 Mi agradecimiento a LanusStats por facilitar la extracción de datos de 365Scores como a @Vdot_Spain por su aplicación que sirvió de inspiración de generar esta adatpación para el usuario.
 
 Modo de uso:
-- Carga los links de 365Scores y Scoresway en cada uno de sus campos del partido a analizar ingresando a [Scoresway](https://www.scoresway.com/en_GB/soccer) y [365Scores](https://www.365scores.com/es).
+- Carga los links del partido a analizar ingresando a [Scoresway](https://www.scoresway.com/en_GB/soccer) y [365Scores](https://www.365scores.com/es) y colocalos en sus respectivos campos.
 - Los campos muestran un link de muestra para que se vea el formato esperado.
 - Elegi los colores de cada equipo.
 - Completa el subtitulo del reporte.
