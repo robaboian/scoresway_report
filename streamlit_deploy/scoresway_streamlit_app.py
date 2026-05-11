@@ -7243,6 +7243,7 @@ def main() -> None:
 
     st.title("Reportes colectivos con data de eventing")
     st.markdown(APP_EXPLANATORY_TEXT)
+    st.markdown(TEXTO)
 
     url_365scores = st.text_input(
         "Link 365Scores",
@@ -7314,7 +7315,7 @@ def main() -> None:
 
     _show_reports(reports)
 
-    st.markdown(TEXTO)
+    
 
 
 if __name__ == "__main__":
