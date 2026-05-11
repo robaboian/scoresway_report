@@ -5,9 +5,7 @@ Unidecode
 requests
 beautifulsoup4
 LanusStats
-undetected-chromedriver
 selenium
-webdriver-manager
 matplotlib
 seaborn
 pillow
