@@ -16,3 +16,4 @@ scipy
 openpyxl
 IPython
 undetected-chromedriver
+pyvirtualdisplay
