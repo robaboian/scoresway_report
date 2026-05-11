@@ -15,5 +15,3 @@ scikit-learn
 scipy
 openpyxl
 IPython
-chromium
-chromium-driver
