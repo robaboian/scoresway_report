@@ -41,7 +41,7 @@ Esta aplicación permite generar reportes visuales a partir de datos de Scoreswa
 
 La base del código fue desarrollada por @adnaaan433 para trabajar con datos de WhoScored.
 En esta versión, adapté el flujo para utilizarlo con partidos de Scoresway, donde actualmente está disponible el eventing de la Liga Argentina.
-Mi agradecimiento también a LanusStats por facilitar la extracción de datos de 365Scores.
+Mi agradecimiento también a @LanusStats por facilitar la extracción de datos de 365Scores.
 
 Modo de uso:
 - Carga los links de 365Scores y Scoresway en cada uno de sus campos.
