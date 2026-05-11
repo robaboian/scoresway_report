@@ -23,6 +23,8 @@ streamlit run scoresway_streamlit_app.py
 1. Subir esta carpeta a un repo de GitHub.
 2. Crear una app en Streamlit Cloud.
 3. Elegir el repo, branch y archivo principal `scoresway_streamlit_app.py`.
-4. Usar Python 3.12.
+4. En `Advanced settings`, elegir Python 3.12.
 
 Nota: la app actualmente conserva el flujo de captura de endpoints del notebook original. En entornos cloud, si Selenium da problemas, el siguiente paso recomendado es reemplazar esa captura por llamadas directas a los endpoints de Scoresway.
+
+Si el build queda mucho tiempo en `Preparing metadata (pyproject.toml)`, suele ser por la instalacion/resolucion de dependencias cientificas pesadas (`pandas`, `pillow`, `scipy`, `scikit-learn`, `matplotlib`) o por dependencias transitivas. En Streamlit Cloud conviene usar Python 3.12 para favorecer wheels precompilados. No uses `runtime.txt`: Streamlit Community Cloud no lo usa para seleccionar la version de Python; se configura desde `Advanced settings`.
