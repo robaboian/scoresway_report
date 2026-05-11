@@ -1,0 +1,17 @@
+streamlit==1.44.1
+pandas==2.2.3
+numpy==2.2.4
+Unidecode==1.4.0
+requests==2.32.3
+beautifulsoup4==4.13.4
+LanusStats==1.7.6
+selenium==4.32.0
+webdriver-manager==4.0.2
+matplotlib==3.10.1
+seaborn==0.13.2
+pillow==11.1.0
+mplsoccer==1.4.0
+highlight-text==0.2
+scikit-learn==1.6.1
+scipy==1.15.2
+openpyxl==3.1.5
