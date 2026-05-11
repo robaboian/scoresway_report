@@ -1,3 +1,4 @@
 build-essential
 chromium
 chromium-driver
+xvfb
