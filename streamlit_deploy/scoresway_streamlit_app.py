@@ -45,6 +45,7 @@ Mi agradecimiento también a LanusStats por facilitar la extracción de datos de
 
 Modo de uso:
 - Carga los links de 365Scores y Scoresway en cada uno de sus campos.
+- Formato: https://www.scoresway.com/en_GB/soccer/liga-profesional-argentina-2026/8v84l9nq3d5t0j4gb781i3llg/match/view/bhj87yt1cpb4yscsqvxpfq044/match-summary | https://www.scoresway.com/en_GB/soccer/liga-profesional-argentina-2026/8v84l9nq3d5t0j4gb781i3llg/match/view/bhj87yt1cpb4yscsqvxpfq044/match-summary
 - Elegi los colores de cada equipo.
 - Completa el subtitulo del reporte.
 - Genera y descarga los dos reportes colectivos.
@@ -5663,9 +5664,9 @@ def zone14hs(ax, team_name, col):
 
     # Headings and other texts
     if col == hcol:
-      ax.set_title(f"{hteamName}\nZona 14 y pases en carriles interiores", color=line_color, fontsize=25, fontweight='bold')
+      ax.set_title(f"{hteamName}\nPases a Zona14 y carriles interiores", color=line_color, fontsize=25, fontweight='bold')
     else:
-      ax.set_title(f"{ateamName}\nZona 14 y pases en carriles interiores", color=line_color, fontsize=25, fontweight='bold')
+      ax.set_title(f"{ateamName}\nPases a Zona14 y carriles interiores", color=line_color, fontsize=25, fontweight='bold')
 
     return {
         'Team_Name': team_name,
