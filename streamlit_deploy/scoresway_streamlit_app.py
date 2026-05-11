@@ -41,7 +41,7 @@ Esta aplicación permite generar reportes visuales a partir de datos de Scoreswa
 
 La base del código fue desarrollada por @adnaaan433 para trabajar con datos de WhoScored.
 En esta versión, adapté el flujo para utilizarlo con partidos de Scoresway, donde actualmente está disponible el eventing de la Liga Argentina.
-Mi agradecimiento también a @LanusStats por facilitar la extracción de datos de 365Scores.
+Mi agradecimiento también a LanusStats por facilitar la extracción de datos de 365Scores.
 
 Modo de uso:
 - Carga los links de 365Scores y Scoresway en cada uno de sus campos.
@@ -67,6 +67,7 @@ import json
 import math
 import time
 import random
+import shutil
 import warnings
 from pprint import pprint
 from datetime import datetime
@@ -96,7 +97,47 @@ from LanusStats import threesixfivescores
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
-from webdriver_manager.chrome import ChromeDriverManager
+
+
+def crear_driver_scoresway():
+    """
+    Crea un ChromeDriver compatible con Streamlit Cloud.
+
+    Importante:
+    - NO usa webdriver-manager, porque en cloud puede descargar un driver viejo/incompatible.
+    - Usa chromium/chromedriver instalados desde packages.txt.
+    - Fuerza headless porque Streamlit Cloud no tiene interfaz grafica.
+    """
+    chrome_options = Options()
+    chrome_options.add_argument("--headless=new")
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--window-size=1400,1000")
+    chrome_options.add_argument("--remote-debugging-port=9222")
+    chrome_options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
+
+    chromium_path = (
+        shutil.which("chromium")
+        or shutil.which("chromium-browser")
+        or shutil.which("google-chrome")
+        or shutil.which("google-chrome-stable")
+    )
+    chromedriver_path = shutil.which("chromedriver")
+
+    if chromium_path:
+        chrome_options.binary_location = chromium_path
+
+    if not chromedriver_path:
+        raise RuntimeError(
+            "No se encontro chromedriver en el sistema. "
+            "En Streamlit Cloud, revisa que packages.txt tenga chromium y chromium-driver."
+        )
+
+    return webdriver.Chrome(
+        service=Service(chromedriver_path),
+        options=chrome_options,
+    )
 
 # ============================================================
 # VISUALIZACIÓN
@@ -367,20 +408,9 @@ def obtener_callback_matchstats(info_formations, partido_id=None):
     (
         7,
         r'''
-def obtener_info_api_player_stats_desde_network(url_player_stats, esperar=12, headless=False):
-    chrome_options = Options()
-
-    if headless:
-        chrome_options.add_argument("--headless=new")
-
-    chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--window-size=1400,1000")
-    chrome_options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
-
-    driver = webdriver.Chrome(
-        service=Service(ChromeDriverManager().install()),
-        options=chrome_options
-    )
+def obtener_info_api_player_stats_desde_network(url_player_stats, esperar=12, headless=True):
+    # En Streamlit Cloud debe correr siempre en headless y usando el chromedriver del sistema.
+    driver = crear_driver_scoresway()
 
     try:
         driver.get(url_player_stats)
@@ -483,20 +513,9 @@ def obtener_info_api_player_stats_desde_network(url_player_stats, esperar=12, he
     (
         8,
         r'''
-def obtener_info_api_formations_desde_network(url_formations, esperar=12, headless=False):
-    chrome_options = Options()
-
-    if headless:
-        chrome_options.add_argument("--headless=new")
-
-    chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--window-size=1400,1000")
-    chrome_options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
-
-    driver = webdriver.Chrome(
-        service=Service(ChromeDriverManager().install()),
-        options=chrome_options
-    )
+def obtener_info_api_formations_desde_network(url_formations, esperar=12, headless=True):
+    # En Streamlit Cloud debe correr siempre en headless y usando el chromedriver del sistema.
+    driver = crear_driver_scoresway()
 
     try:
         driver.get(url_formations)
@@ -602,7 +621,7 @@ print("url_player_stats:", url_player_stats)
 info_player_stats = obtener_info_api_player_stats_desde_network(
     url_player_stats,
     esperar=12,
-    headless=False
+    headless=True
 )
 
 sdapi_outlet_key = info_player_stats["sdapi_outlet_key"]
@@ -738,7 +757,7 @@ def descargar_json_matchstats_formations(
 info_formations = obtener_info_api_formations_desde_network(
     url_formations=url_formations,
     esperar=12,
-    headless=False
+    headless=True
 )
 
 json_matchstats = descargar_json_matchstats_formations(
@@ -6885,10 +6904,11 @@ def _patch_report_subtitles(source: str, subtitle: str) -> str:
 
 
 def _patch_runtime_options(source: str, selenium_wait: int, headless: bool) -> str:
-    headless_value = "True" if headless else "False"
+    # Streamlit Cloud no tiene interfaz grafica: Selenium debe correr en headless.
     patched = source
     patched = re.sub(r"esperar=12", f"esperar={selenium_wait}", patched)
-    patched = re.sub(r"headless=False", f"headless={headless_value}", patched)
+    patched = re.sub(r"headless=False", "headless=True", patched)
+    patched = re.sub(r"headless=True", "headless=True", patched)
     return patched
 
 
@@ -7081,19 +7101,19 @@ def _run_report_job_with_retry(
             progress_text=progress_text,
         )
     except RuntimeError as exc:
-        if not headless or not _is_scoresway_network_capture_error(exc):
+        if not _is_scoresway_network_capture_error(exc):
             raise
 
         log_placeholder.warning(
-            "Scoresway no expuso los endpoints en Chrome headless. "
-            "Reintentando con Chrome visible..."
+            "Scoresway no expuso los endpoints en el primer intento. "
+            "Reintentando en headless con mas tiempo de espera..."
         )
 
         return _run_report_job(
             url_365scores=url_365scores,
             url_scoresway=url_scoresway,
-            selenium_wait=selenium_wait,
-            headless=False,
+            selenium_wait=max(selenium_wait + 8, 20),
+            headless=True,
             home_color=home_color,
             away_color=away_color,
             subtitle=subtitle,
@@ -7150,7 +7170,7 @@ def main() -> None:
     with col_2:
         away_color = st.color_picker("Color visitante", "#00a0de")
     with col_3:
-        headless = st.toggle("Chrome headless", value=False)
+        headless = st.toggle("Chrome headless", value=True)
 
     subtitle = st.text_input(
         "Subtitulo",
