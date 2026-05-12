@@ -6917,17 +6917,23 @@ EMBEDDED_RESOURCE_FILES_B64: dict[str, str] = {
 
 def _normalizar_url_scoresway_a_ingles(url_scoresway: str) -> str:
     """
-    Scoresway cambia el idioma en el primer segmento de la URL:
-    /es_ES/soccer/..., /en_GB/soccer/..., etc.
+    Normaliza URLs de Scoresway para que el scraping trabaje siempre con una
+    forma estable:
 
-    El scraping está armado contra la versión inglesa, por eso normalizamos
-    cualquier locale a /en_GB/ antes de ejecutar Selenium y reconstruir endpoints.
+    - Convierte cualquier locale a /en_GB/.
+      Ej: /es_ES/soccer/... -> /en_GB/soccer/...
+
+    - Convierte URLs descriptivas a la forma técnica /match/view/.
+      Ej: /match/boca-juniors-vs-huracan/PARTIDO_ID/match-summary
+          -> /match/view/PARTIDO_ID/match-summary
+
+    Acepta también secciones como player-stats y formations.
     """
     url_scoresway = url_scoresway.strip()
     if not url_scoresway:
         return url_scoresway
 
-    # Caso normal: https://www.scoresway.com/es_ES/soccer/...
+    # 1) Locale: /es_ES/soccer/... o cualquier xx_XX -> /en_GB/soccer/...
     url_scoresway = re.sub(
         r"(https?://(?:www\.)?scoresway\.com/)[a-z]{2}_[A-Z]{2}(/soccer/)",
         r"\1en_GB\2",
@@ -6935,13 +6941,27 @@ def _normalizar_url_scoresway_a_ingles(url_scoresway: str) -> str:
         count=1,
     )
 
-    # Fallback por si viniera scoresway.com/soccer/... sin locale.
+    # 2) Fallback: scoresway.com/soccer/... sin locale -> scoresway.com/en_GB/soccer/...
     url_scoresway = re.sub(
         r"(https?://(?:www\.)?scoresway\.com/)(soccer/)",
         r"\1en_GB/\2",
         url_scoresway,
         count=1,
     )
+
+    # 3) Canonicalizar estructura del partido:
+    #    /match/view/ID/seccion queda igual.
+    #    /match/slug-del-partido/ID/seccion pasa a /match/view/ID/seccion.
+    match = re.search(
+        r"^(https?://(?:www\.)?scoresway\.com/en_GB/soccer/[^/]+/[^/]+/match)/(?:view|[^/]+)/([^/?#]+)/([^/?#]+)(.*)$",
+        url_scoresway,
+    )
+    if match:
+        base_match = match.group(1)
+        partido_id = match.group(2)
+        seccion = match.group(3)
+        resto = match.group(4) or ""
+        url_scoresway = f"{base_match}/view/{partido_id}/{seccion}{resto}"
 
     return url_scoresway
 
@@ -6954,7 +6974,7 @@ def _validate_inputs(url_365scores: str, url_scoresway: str) -> list[str]:
         errors.append("El primer link no parece ser de 365Scores.")
     if not url_scoresway.strip():
         errors.append("Las opciones de reporte aparecerán cuando ambos links estén cargados.")
-    elif "scoresway.com" not in url_scoresway or "/match/view/" not in url_scoresway:
+    elif "scoresway.com" not in url_scoresway or "/match/" not in url_scoresway:
         errors.append("El segundo link no parece ser un partido de Scoresway.")
     return errors
 
