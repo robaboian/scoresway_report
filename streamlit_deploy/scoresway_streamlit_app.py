@@ -6915,6 +6915,37 @@ EMBEDDED_RESOURCE_FILES_B64: dict[str, str] = {
 
 
 
+def _normalizar_url_scoresway_a_ingles(url_scoresway: str) -> str:
+    """
+    Scoresway cambia el idioma en el primer segmento de la URL:
+    /es_ES/soccer/..., /en_GB/soccer/..., etc.
+
+    El scraping está armado contra la versión inglesa, por eso normalizamos
+    cualquier locale a /en_GB/ antes de ejecutar Selenium y reconstruir endpoints.
+    """
+    url_scoresway = url_scoresway.strip()
+    if not url_scoresway:
+        return url_scoresway
+
+    # Caso normal: https://www.scoresway.com/es_ES/soccer/...
+    url_scoresway = re.sub(
+        r"(https?://(?:www\.)?scoresway\.com/)[a-z]{2}_[A-Z]{2}(/soccer/)",
+        r"\1en_GB\2",
+        url_scoresway,
+        count=1,
+    )
+
+    # Fallback por si viniera scoresway.com/soccer/... sin locale.
+    url_scoresway = re.sub(
+        r"(https?://(?:www\.)?scoresway\.com/)(soccer/)",
+        r"\1en_GB/\2",
+        url_scoresway,
+        count=1,
+    )
+
+    return url_scoresway
+
+
 def _validate_inputs(url_365scores: str, url_scoresway: str) -> list[str]:
     errors = []
     if not url_365scores.strip():
@@ -7186,12 +7217,14 @@ def _show_individual_reports(reports: dict[str, bytes]) -> None:
 
 
 def _run_ui_job(mode: str, url_365scores: str, url_scoresway: str, headless: bool, home_color: str, away_color: str, subtitle: str, selected_players: list[str] | None = None):
+    url_scoresway_normalizada = _normalizar_url_scoresway_a_ingles(url_scoresway)
+
     with st.expander("Ver ejecucion del notebook", expanded=False):
         log_placeholder = st.empty()
     progress_bar = st.progress(0); progress_text = st.empty()
     with st.status("Generando...", expanded=False) as status:
         try:
-            workdir = _run_report_job_with_retry(url_365scores=url_365scores.strip(), url_scoresway=url_scoresway.strip(), selenium_wait=DEFAULT_SELENIUM_WAIT, headless=headless, home_color=home_color, away_color=away_color, subtitle=subtitle.strip() or "Jornada | Torneo | Reporte", log_placeholder=log_placeholder, progress_bar=progress_bar, progress_text=progress_text, mode=mode, selected_players=selected_players)
+            workdir = _run_report_job_with_retry(url_365scores=url_365scores.strip(), url_scoresway=url_scoresway_normalizada, selenium_wait=DEFAULT_SELENIUM_WAIT, headless=headless, home_color=home_color, away_color=away_color, subtitle=subtitle.strip() or "Jornada | Torneo | Reporte", log_placeholder=log_placeholder, progress_bar=progress_bar, progress_text=progress_text, mode=mode, selected_players=selected_players)
         except Exception as exc:
             status.update(label="Fallo la generacion", state="error", expanded=False)
             st.exception(exc)
@@ -7224,6 +7257,10 @@ def main() -> None:
         for error in errors:
             st.warning(error)
         st.stop()
+
+    url_scoresway_normalizada = _normalizar_url_scoresway_a_ingles(url_scoresway)
+    if url_scoresway_normalizada != url_scoresway.strip():
+        st.caption("Link de Scoresway normalizado automáticamente a la versión en inglés (/en_GB/) para ejecutar el scraping.")
 
     modalidad = st.radio("Tipo de reporte", ["Grupal", "Individual"], horizontal=True)
     subtitle = "Reporte individual"
