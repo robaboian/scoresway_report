@@ -7,9 +7,12 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import io
+import zipfile
 from pathlib import Path
 
 import streamlit as st
+from PIL import Image
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -6911,28 +6914,22 @@ EMBEDDED_RESOURCE_FILES_B64: dict[str, str] = {
 }
 
 
+
 def _validate_inputs(url_365scores: str, url_scoresway: str) -> list[str]:
     errors = []
-
     if not url_365scores.strip():
         errors.append("Falta el link de 365Scores.")
     elif "365scores.com" not in url_365scores:
         errors.append("El primer link no parece ser de 365Scores.")
-
     if not url_scoresway.strip():
         errors.append("Falta el link de Scoresway.")
     elif "scoresway.com" not in url_scoresway or "/match/view/" not in url_scoresway:
         errors.append("El segundo link no parece ser un partido de Scoresway.")
-
     return errors
 
 
-def _load_notebook_code_cells() -> list[tuple[int, str]]:
-    return [
-        (index, source)
-        for index, source in NOTEBOOK_CODE_CELLS
-        if index <= FINAL_CELL_INDEX
-    ]
+def _load_notebook_code_cells(max_cell_index: int = FINAL_CELL_INDEX) -> list[tuple[int, str]]:
+    return [(index, source) for index, source in NOTEBOOK_CODE_CELLS if index <= max_cell_index]
 
 
 def _progress_label_for_cell(cell_index: int) -> str:
@@ -6945,80 +6942,49 @@ def _progress_label_for_cell(cell_index: int) -> str:
     return label
 
 
-def _patch_first_cell(
-    source: str,
-    url_365scores: str,
-    url_scoresway: str,
-    home_color: str,
-    away_color: str,
-) -> str:
+def _patch_first_cell(source: str, url_365scores: str, url_scoresway: str, home_color: str, away_color: str) -> str:
     replacements = [
-        (
-            r'players365\s*=\s*threesixfivescores\.get_players_info\("[^"]+"\)',
-            f"players365 = threesixfivescores.get_players_info({url_365scores!r})",
-        ),
-        (
-            r'shots365\s*=\s*threesixfivescores\.get_match_shotmap\("[^"]+"\)',
-            f"shots365 = threesixfivescores.get_match_shotmap({url_365scores!r})",
-        ),
-        (
-            r'url_partido\s*=\s*"[^"]+"',
-            f"url_partido = {url_scoresway!r}",
-        ),
-        (
-            r"col1\s*=\s*['\"][^'\"]+['\"]",
-            f"col1 = {home_color!r}",
-        ),
-        (
-            r"col2\s*=\s*['\"][^'\"]+['\"]",
-            f"col2 = {away_color!r}",
-        ),
+        (r'players365\s*=\s*threesixfivescores\.get_players_info\("[^"]+"\)', f"players365 = threesixfivescores.get_players_info({url_365scores!r})"),
+        (r'shots365\s*=\s*threesixfivescores\.get_match_shotmap\("[^"]+"\)', f"shots365 = threesixfivescores.get_match_shotmap({url_365scores!r})"),
+        (r'url_partido\s*=\s*"[^"]+"', f"url_partido = {url_scoresway!r}"),
+        (r'col1\s*=\s*[\'\"][^\'\"]+[\'\"]', f"col1 = {home_color!r}"),
+        (r'col2\s*=\s*[\'\"][^\'\"]+[\'\"]', f"col2 = {away_color!r}"),
     ]
-
     patched = source
     for pattern, replacement in replacements:
         patched, count = re.subn(pattern, replacement, patched, count=1)
         if count != 1:
-            raise RuntimeError(
-                "No pude reemplazar una de las URLs iniciales del notebook. "
-                "Revisa si cambio la primera celda."
-            )
-
+            raise RuntimeError("No pude reemplazar una de las URLs iniciales del notebook. Revisa si cambio la primera celda.")
     return patched
 
 
 def _patch_report_subtitles(source: str, subtitle: str) -> str:
     return re.sub(
-        r'fig\.text\(0\.5,\s*0\.95,\s*f?"[^"]*Reporte Post-Match[^"]*",\s*color=line_color,\s*fontsize=30,\s*ha=[\'"]center[\'"],\s*va=[\'"]center[\'"]\)',
+        r"fig\.text\(0\.5,\s*0\.95,.*Reporte Post-Match.*\)",
         f'fig.text(0.5, 0.95, {subtitle!r}, color=line_color, fontsize=30, ha="center", va="center")',
         source,
     )
 
 
 def _patch_runtime_options(source: str, selenium_wait: int, headless: bool) -> str:
-    # Por defecto usamos Chrome NO-headless con Xvfb, porque Scoresway puede no exponer endpoints en headless.
     patched = source
     patched = re.sub(r"esperar=12|esperar=25", f"esperar={selenium_wait}", patched)
     patched = re.sub(r"headless=(True|False)", f"headless={headless}", patched)
     return patched
 
 
-def _build_runner_code(
-    url_365scores: str,
-    url_scoresway: str,
-    selenium_wait: int,
-    headless: bool,
-    home_color: str,
-    away_color: str,
-    subtitle: str,
-) -> str:
+INDIVIDUAL_REPORT_CODE = '\n# ============================================================\n# REPORTE INDIVIDUAL JUGADOR - PASSMAP / CARRIES / HEATMAP\n# Version integrada para Streamlit runner\n# ============================================================\n\nif "_mask_contains" not in globals():\n    def _mask_contains(data, pattern, column="qualifiers"):\n        if column not in data.columns:\n            return pd.Series(False, index=data.index)\n        return data[column].fillna("").astype(str).str.contains(pattern, case=False, regex=True, na=False)\n\nif "_flag_mask" not in globals():\n    def _flag_mask(data, column, fallback_pattern=None):\n        if column in data.columns:\n            serie = data[column]\n            if pd.api.types.is_bool_dtype(serie):\n                return serie.fillna(False)\n            numeric = pd.to_numeric(serie, errors="coerce")\n            if numeric.notna().any():\n                return numeric.fillna(0).ne(0)\n            return serie.fillna(False).astype(str).str.lower().isin(["true", "1", "yes", "y", "si", "sí"])\n        if fallback_pattern is not None:\n            return _mask_contains(data, fallback_pattern)\n        return pd.Series(False, index=data.index)\n\nif "_open_play_mask" not in globals():\n    def _open_play_mask(data):\n        return ~(\n            _flag_mask(data, "isCornerTaken", "CornerTaken") |\n            _flag_mask(data, "isFreekickTaken", "Freekick") |\n            _flag_mask(data, "isDirectFreekick", "Freekick") |\n            _flag_mask(data, "isIndirectFreekickTaken", "Freekick") |\n            _mask_contains(data, "CornerTaken|Freekick")\n        )\n\nif "_safe_pct" not in globals():\n    def _safe_pct(part, total):\n        return 0 if total == 0 else round((part / total) * 100, 2)\n\nif "_progressive_pass_mask" not in globals():\n    def _progressive_pass_mask(data):\n        if "prog_pass" not in data.columns:\n            return pd.Series(False, index=data.index)\n        serie = data["prog_pass"]\n        if pd.api.types.is_bool_dtype(serie):\n            return serie.fillna(False)\n        numeric = pd.to_numeric(serie, errors="coerce")\n        vals = set(numeric.dropna().unique())\n        return numeric.fillna(0).eq(1) if vals and vals.issubset({0, 1}) else numeric.fillna(0).ge(9.11)\n\nif "_progressive_carry_mask" not in globals():\n    def _progressive_carry_mask(data):\n        if "prog_carry" not in data.columns:\n            return pd.Series(False, index=data.index)\n        serie = data["prog_carry"]\n        if pd.api.types.is_bool_dtype(serie):\n            return serie.fillna(False)\n        numeric = pd.to_numeric(serie, errors="coerce")\n        vals = set(numeric.dropna().unique())\n        return numeric.fillna(0).eq(1) if vals and vals.issubset({0, 1}) else numeric.fillna(0).ge(9.11)\n\n\ndef _to_num_cols(data, cols=("x", "y", "endX", "endY")):\n    out = data.copy()\n    for col in cols:\n        if col in out.columns:\n            out[col] = pd.to_numeric(out[col], errors="coerce")\n    return out\n\n\ndef _xT_positive_sum(data):\n    if "xT" not in data.columns:\n        return 0\n    serie = pd.to_numeric(data["xT"], errors="coerce").fillna(0)\n    return round(serie[serie > 0].sum(), 2)\n\n\ndef individual_passMap(ax, pname):\n    pitch = Pitch(pitch_type="uefa", corner_arcs=True, pitch_color=bg_color, line_color=line_color, linewidth=2)\n    pitch.draw(ax=ax)\n    ax.set_xlim(-0.5, 105.5); ax.set_ylim(-0.5, 68.5); ax.set_facecolor(bg_color)\n    dfpass = _to_num_cols(df[(df["type"] == "Pass") & (df["name"] == pname)])\n    acc_pass = dfpass[dfpass["outcomeType"] == "Successful"].copy()\n    iac_pass = dfpass[dfpass["outcomeType"] == "Unsuccessful"].copy()\n    open_play = _open_play_mask(dfpass)\n    pro_pass = acc_pass[_progressive_pass_mask(acc_pass) & (pd.to_numeric(acc_pass.get("x", np.nan), errors="coerce") >= 35) & _open_play_mask(acc_pass)].copy()\n    key_pass = dfpass[_flag_mask(dfpass, "keyPass", "KeyPass") | _mask_contains(dfpass, "KeyPass")].copy()\n    big_chnc = dfpass[_flag_mask(dfpass, "isBigChance") | _mask_contains(dfpass, "BigChanceCreated|BigChance")].copy()\n    g_assist = dfpass[_flag_mask(dfpass, "assist", "IntentionalGoalAssist") | _mask_contains(dfpass, "IntentionalGoalAssist")].copy()\n    df_no_carry = df[df["type"] != "Carry"].copy().reset_index(drop=True)\n    next_assist = (_flag_mask(df_no_carry, "assist", "IntentionalGoalAssist") | _mask_contains(df_no_carry, "IntentionalGoalAssist")).shift(-1).fillna(False).astype(bool)\n    next_key_pass = (_flag_mask(df_no_carry, "keyPass", "KeyPass") | _mask_contains(df_no_carry, "KeyPass")).shift(-1).fillna(False).astype(bool)\n    pre_asst = df_no_carry[next_assist & (df_no_carry["type"] == "Pass") & (df_no_carry["outcomeType"] == "Successful") & (df_no_carry["name"] == pname)]\n    shot_buildup = df_no_carry[next_key_pass & (df_no_carry["type"] == "Pass") & (df_no_carry["outcomeType"] == "Successful") & (df_no_carry["name"] == pname)]\n    fnl_thd = acc_pass[(pd.to_numeric(acc_pass.get("endX", np.nan), errors="coerce") >= 70) & _open_play_mask(acc_pass)]\n    pen_box = acc_pass[(pd.to_numeric(acc_pass.get("endX", np.nan), errors="coerce") >= 88.5) & (pd.to_numeric(acc_pass.get("endY", np.nan), errors="coerce") >= 13.6) & (pd.to_numeric(acc_pass.get("endY", np.nan), errors="coerce") <= 54.4) & _open_play_mask(acc_pass)]\n    crs = dfpass[(_flag_mask(dfpass, "isCross", "Cross") | _mask_contains(dfpass, "Cross")) & open_play]\n    crs_acc = crs[crs["outcomeType"] == "Successful"]\n    lng = dfpass[(_flag_mask(dfpass, "isLongball", "Longball") | _mask_contains(dfpass, "Longball")) & open_play]\n    lng_acc = lng[lng["outcomeType"] == "Successful"]\n    for data, color, lw, alpha, z in [(iac_pass, line_color, 4, .13, 2), (acc_pass, line_color, 2, .16, 2), (pro_pass, hcol, 3, 1, 3), (key_pass, violet, 4, 1, 4), (g_assist, "green", 4, 1, 5)]:\n        plot_data = data.dropna(subset=["x", "y", "endX", "endY"])\n        if not plot_data.empty:\n            pitch.lines(plot_data.x, plot_data.y, plot_data.endX, plot_data.endY, color=color, lw=lw, alpha=alpha, comet=True, zorder=z, ax=ax)\n            pitch.scatter(plot_data.endX, plot_data.endY, s=32, color=bg_color, edgecolor=color, alpha=1, zorder=z, ax=ax)\n    acc_pct = _safe_pct(len(acc_pass), len(dfpass))\n    ax.set_title("Mapa de pases", color=line_color, fontsize=25, fontweight="bold", y=1.03)\n    if dfpass.empty:\n        ax.text(52.5, 34, "Sin pases registrados", color=line_color, fontsize=18, ha="center", va="center")\n    ax_text(0, -3, f\'\'\'Pases efectivos: {len(acc_pass)}/{len(dfpass)} ({acc_pct}%) | <Progresivos: {len(pro_pass)}> | <Chances: {len(key_pass)}>\nGrandes oportunidades: {len(big_chnc)} | <Asistencias: {len(g_assist)}> | Pre-asistencias: {len(pre_asst)}\nParticipación en disparos: {len(shot_buildup)} | En el tercio final: {len(fnl_thd)} | Al área: {len(pen_box)}\nCentros (efectivos): {len(crs)} ({len(crs_acc)}) | Envíos largos (efectivos): {len(lng)} ({len(lng_acc)})\nxT de pase: {_xT_positive_sum(dfpass)}\'\'\', highlight_textprops=[{"color": hcol}, {"color": violet}, {"color": "green"}], fontsize=15, ha="left", va="top", ax=ax)\n    return {"Player_Name": pname, "Accurate_Passes": len(acc_pass), "Total_Passes": len(dfpass), "Pass_Accuracy": acc_pct, "Progressive_Passes": len(pro_pass), "Chances_Created": len(key_pass), "Assists": len(g_assist)}\n\n\ndef individual_carry(ax, pname):\n    pitch = Pitch(pitch_type="uefa", corner_arcs=True, pitch_color=bg_color, line_color=line_color, linewidth=2)\n    pitch.draw(ax=ax)\n    ax.set_xlim(-0.5, 105.5); ax.set_ylim(-0.5, 68.5); ax.set_facecolor(bg_color)\n    df_events = _to_num_cols(df)\n    is_player_carry = (df_events["type"] == "Carry") & (df_events["name"] == pname)\n    df_carry = df_events[is_player_carry].copy()\n    next_type = df_events["type"].shift(-1).fillna("").astype(str)\n    next_key_pass = (_flag_mask(df_events, "keyPass", "KeyPass") | _mask_contains(df_events, "KeyPass")).shift(-1).fillna(False).astype(bool)\n    next_assist = (_flag_mask(df_events, "assist", "IntentionalGoalAssist") | _mask_contains(df_events, "IntentionalGoalAssist")).shift(-1).fillna(False).astype(bool)\n    led_shot = df_events[is_player_carry & (next_key_pass | next_type.str.contains("Shot|Goal", case=False, regex=True, na=False))].copy()\n    led_goal = df_events[is_player_carry & (next_assist | next_type.eq("Goal"))].copy()\n    pro_carry = df_carry[_progressive_carry_mask(df_carry) & (pd.to_numeric(df_carry.get("x", np.nan), errors="coerce") >= 35)].copy()\n    fth_carry = df_carry[(df_carry["x"] < 70) & (df_carry["endX"] >= 70)].copy()\n    box_entry = df_carry[(df_carry["endX"] >= 88.5) & (df_carry["endY"] >= 13.6) & (df_carry["endY"] <= 54.4)].copy()\n    disp = df_events[is_player_carry & next_type.eq("Dispossessed")].copy()\n    df_to = df_events[(df_events["type"] == "TakeOn") & (df_events["name"] == pname)].copy()\n    t_ons = df_to[df_to["outcomeType"] == "Successful"].copy(); t_onu = df_to[df_to["outcomeType"] == "Unsuccessful"].copy()\n    def _draw_arrows(data, color, alpha, linewidth, zorder):\n        for _, row in data.dropna(subset=["x", "y", "endX", "endY"]).iterrows():\n            ax.add_patch(patches.FancyArrowPatch((row["x"], row["y"]), (row["endX"], row["endY"]), color=color, alpha=alpha, arrowstyle="->", linestyle="--", linewidth=linewidth, mutation_scale=18, zorder=zorder))\n    _draw_arrows(df_carry, line_color, .25, 2, 2); _draw_arrows(pro_carry, hcol, 1, 3, 3); _draw_arrows(led_shot, violet, 1, 4, 4); _draw_arrows(led_goal, "green", 1, 4, 5)\n    pitch.scatter(t_ons.x, t_ons.y, s=50, color="orange", edgecolor=line_color, lw=1, zorder=6, ax=ax)\n    pitch.scatter(t_onu.x, t_onu.y, s=50, color="None", edgecolor="orange", hatch="/////", lw=1.5, zorder=6, ax=ax)\n    if not df_carry.empty:\n        length = np.sqrt((df_carry["x"] - df_carry["endX"])**2 + (df_carry["y"] - df_carry["endY"])**2)\n        med_len = round(length.median(), 2); total_len = round(length.sum(), 2)\n    else:\n        med_len = total_len = 0\n    success_rate = _safe_pct(len(t_ons), len(df_to))\n    ax.set_title("Conducciones y 1 vs. 1 ofensivo", color=line_color, fontsize=25, fontweight="bold", y=1.03)\n    if df_carry.empty and df_to.empty:\n        ax.text(52.5, 34, "Sin carries ni take-ons registrados", color=line_color, fontsize=18, ha="center", va="center")\n    ax_text(0, -3, f\'\'\'Conducciones: {len(df_carry)} | <Progresivas: {len(pro_carry)}> | <Terminaron en disparo: {len(led_shot)}>\n<Terminaron en gol: {len(led_goal)}> | Conducciones fallidas: {len(disp)} | Al tercio final: {len(fth_carry)}\nAl área rival: {len(box_entry)} | Distancia media: {med_len} m | Distancia total: {total_len} m\nxT de conducciones: {_xT_positive_sum(df_carry)} | <1 vs. 1 ganados: {len(t_ons)}/{len(df_to)} ({success_rate}%)>\'\'\', highlight_textprops=[{"color": hcol}, {"color": violet}, {"color": "green"}, {"color": "darkorange"}], fontsize=15, ha="left", va="top", ax=ax)\n    return {"Player_Name": pname, "Total_Carries": len(df_carry), "Progressive_Carries": len(pro_carry), "Carries_Led_to_Shot": len(led_shot), "Successful_TakeOns": len(t_ons), "Total_TakeOns": len(df_to)}\n\n\ndef heatMap(ax, pname):\n    pitch = Pitch(pitch_type="uefa", corner_arcs=True, pitch_color=bg_color, line_color=line_color, linewidth=2, line_zorder=3)\n    pitch.draw(ax=ax)\n    ax.set_xlim(-0.5, 105.5); ax.set_ylim(-0.5, 68.5); ax.set_facecolor(bg_color)\n    df_player = _to_num_cols(df[df["name"] == pname], cols=("x", "y"))\n    type_series = df_player["type"].fillna("").astype(str)\n    heatmap_events = df_player[~type_series.str.contains("SubstitutionOff|SubstitutionOn|Card|Carry", case=False, regex=True, na=False)].dropna(subset=["x", "y"]).copy()\n    touches = df_player[_flag_mask(df_player, "isTouch")].dropna(subset=["x", "y"]).copy()\n    final_third = touches[touches["x"] >= 70].copy()\n    pen_box = touches[(touches["x"] >= 88.5) & (touches["y"] >= 13.6) & (touches["y"] <= 54.4)].copy()\n    if not heatmap_events.empty:\n        padding = pd.DataFrame({"x": [-5, -5, 110, 110], "y": [-5, 73, 73, -5]})\n        heatmap_data = pd.concat([heatmap_events[["x", "y"]], padding], ignore_index=True)\n        cmap = LinearSegmentedColormap.from_list("Player Heatmap", [bg_color, green, "yellow", hcol, "red"], N=500)\n        heatmap, xedges, yedges = np.histogram2d(heatmap_data.x, heatmap_data.y, bins=(18, 18))\n        extent = [xedges[0], xedges[-1], yedges[-1], yedges[0]]\n        ax.imshow(heatmap.T, extent=extent, cmap=cmap, interpolation="bilinear", zorder=1)\n    ax.scatter(touches.x, touches.y, marker="o", s=10, c="gray", alpha=0.65, zorder=4)\n    ax.set_title("Toques y mapa de calor", color=line_color, fontsize=25, fontweight="bold", y=1.03)\n    if df_player.empty:\n        ax.text(52.5, 34, "Sin eventos registrados", color=line_color, fontsize=18, ha="center", va="center", zorder=5)\n    ax.text(52.5, -3, f\'\'\'Toques: {len(touches)}  |  En el tercio ofensivo: {len(final_third)}  |  En el área: {len(pen_box)}\\n\'\'\', fontsize=15, ha="center", va="top", color=line_color)\n    return {"Player_Name": pname, "Touches": len(touches), "Touches_Final_Third": len(final_third), "Touches_Penalty_Area": len(pen_box)}\n\n# ============================================================\n# REPORTE INDIVIDUAL JUGADOR - SHOTMAP & PASSES RECEIVED\n# ============================================================\n\nimport re\nfrom difflib import SequenceMatcher\n\n\nif "_mask_contains" not in globals():\n    def _mask_contains(data, pattern, column="qualifiers"):\n        if column not in data.columns:\n            return pd.Series(False, index=data.index)\n        return data[column].fillna("").astype(str).str.contains(\n            pattern,\n            case=False,\n            regex=True,\n            na=False\n        )\n\n\nif "_flag_mask" not in globals():\n    def _flag_mask(data, column, fallback_pattern=None):\n        if column in data.columns:\n            serie = data[column]\n\n            if pd.api.types.is_bool_dtype(serie):\n                return serie.fillna(False)\n\n            numeric = pd.to_numeric(serie, errors="coerce")\n            if numeric.notna().any():\n                return numeric.fillna(0).ne(0)\n\n            return serie.fillna(False).astype(str).str.lower().isin(\n                ["true", "1", "yes", "y", "si", "sí"]\n            )\n\n        if fallback_pattern is not None:\n            return _mask_contains(data, fallback_pattern)\n\n        return pd.Series(False, index=data.index)\n\n\nif "_open_play_mask" not in globals():\n    def _open_play_mask(data):\n        return ~(\n            _flag_mask(data, "isCornerTaken", "CornerTaken") |\n            _flag_mask(data, "isFreekickTaken", "Freekick") |\n            _flag_mask(data, "isDirectFreekick", "Freekick") |\n            _flag_mask(data, "isIndirectFreekickTaken", "Freekick") |\n            _mask_contains(data, "CornerTaken|Freekick")\n        )\n\n\nif "_progressive_pass_mask" not in globals():\n    def _progressive_pass_mask(data):\n        if "prog_pass" not in data.columns:\n            return pd.Series(False, index=data.index)\n\n        serie = data["prog_pass"]\n        if pd.api.types.is_bool_dtype(serie):\n            return serie.fillna(False)\n\n        numeric = pd.to_numeric(serie, errors="coerce")\n        unique_values = set(numeric.dropna().unique())\n\n        if unique_values and unique_values.issubset({0, 1}):\n            return numeric.fillna(0).eq(1)\n\n        return numeric.fillna(0).ge(9.11)\n\n\nif "_safe_pct" not in globals():\n    def _safe_pct(part, total):\n        if total == 0:\n            return 0\n        return round((part / total) * 100, 2)\n\n\ndef _normalize_player_name(value):\n    if pd.isna(value):\n        return ""\n    text = unidecode(str(value)).lower()\n    text = re.sub(r"[^a-z0-9 ]+", " ", text)\n    text = re.sub(r"\\s+", " ", text).strip()\n    return text\n\n\ndef _name_match_score(target_name, candidate_name):\n    target = _normalize_player_name(target_name)\n    candidate = _normalize_player_name(candidate_name)\n\n    if not target or not candidate:\n        return 0\n    if target == candidate:\n        return 1\n\n    target_parts = target.split()\n    candidate_parts = candidate.split()\n\n    if target_parts and candidate_parts and target_parts[-1] == candidate_parts[-1]:\n        target_first = target_parts[0]\n        candidate_first = candidate_parts[0]\n        if len(target_first) == 1 and candidate_first.startswith(target_first):\n            return 0.98\n        if len(candidate_first) == 1 and target_first.startswith(candidate_first):\n            return 0.98\n        return max(0.9, SequenceMatcher(None, target, candidate).ratio())\n\n    return SequenceMatcher(None, target, candidate).ratio()\n\n\ndef _player_team_from_events(pname):\n    if "df" not in globals() or "teamName" not in df.columns or "name" not in df.columns:\n        return None\n\n    exact = df[df["name"] == pname]\n    if not exact.empty:\n        teams = exact["teamName"].dropna()\n        if not teams.empty:\n            return teams.mode().iloc[0]\n\n    names = df[["name", "teamName"]].dropna().drop_duplicates().copy()\n    if names.empty:\n        return None\n\n    names["_match_score"] = names["name"].apply(lambda candidate: _name_match_score(pname, candidate))\n    best_score = names["_match_score"].max()\n    if pd.isna(best_score) or best_score < 0.9:\n        return None\n\n    best_name = names.loc[names["_match_score"].idxmax(), "name"]\n    teams = df.loc[df["name"] == best_name, "teamName"].dropna()\n    if teams.empty:\n        return None\n    return teams.mode().iloc[0]\n\n\ndef _prepare_individual_shot_source():\n    if "Shotsdf_shotmap" in globals():\n        shot_source = Shotsdf_shotmap.copy()\n    elif "shots_df" in globals():\n        shot_source = shots_df.copy()\n    else:\n        raise NameError("No encuentro Shotsdf_shotmap ni shots_df para construir el shotmap individual.")\n\n    shot_source = shot_source.loc[:, ~shot_source.columns.duplicated()].copy()\n\n    if "playerName" not in shot_source.columns:\n        if "name" in shot_source.columns:\n            shot_source["playerName"] = shot_source["name"]\n        else:\n            shot_source["playerName"] = ""\n\n    shot_source["playerName"] = shot_source["playerName"].astype(str).apply(unidecode)\n\n    if "shotType" not in shot_source.columns:\n        if "shot_outcome" in shot_source.columns:\n            shot_source["shotType"] = shot_source["shot_outcome"]\n        elif "type" in shot_source.columns:\n            shot_source["shotType"] = shot_source["type"]\n        else:\n            shot_source["shotType"] = ""\n\n    outcome_map = {\n        "Fallado": "miss",\n        "Gol": "goal",\n        "Atajado": "save",\n        "Bloqueado": "block"\n    }\n    type_visual_map = {\n        "goal": "Goal",\n        "save": "SavedShot",\n        "miss": "MissedShots",\n        "block": "BlockedShot",\n        "post": "ShotOnPost",\n        "goalpost": "ShotOnPost",\n        "shotonpost": "ShotOnPost",\n        "savedshot": "SavedShot",\n        "missedshots": "MissedShots",\n        "blockedshot": "BlockedShot"\n    }\n    visual_types = ["Goal", "SavedShot", "MissedShots", "BlockedShot", "ShotOnPost"]\n\n    if "shot_outcome" in shot_source.columns:\n        shot_source["shotType"] = shot_source["shot_outcome"].map(outcome_map).fillna(shot_source["shotType"])\n\n    shot_low = shot_source["shotType"].fillna("").astype(str).str.strip().str.lower()\n\n    if "type" not in shot_source.columns:\n        shot_source["type"] = shot_low.map(type_visual_map)\n    else:\n        current_type = shot_source["type"].fillna("").astype(str).str.strip()\n        mapped_type = current_type.str.lower().map(type_visual_map)\n        shot_source["type"] = np.where(\n            current_type.isin(visual_types),\n            current_type,\n            mapped_type.fillna(shot_low.map(type_visual_map))\n        )\n\n    if "expectedGoals" not in shot_source.columns and "xg" in shot_source.columns:\n        shot_source["expectedGoals"] = shot_source["xg"]\n    if "expectedGoalsOnTarget" not in shot_source.columns and "xgot" in shot_source.columns:\n        shot_source["expectedGoalsOnTarget"] = shot_source["xgot"]\n    if "expectedGoals" not in shot_source.columns:\n        shot_source["expectedGoals"] = 0\n    if "expectedGoalsOnTarget" not in shot_source.columns:\n        shot_source["expectedGoalsOnTarget"] = 0\n\n    shot_source["expectedGoals"] = pd.to_numeric(shot_source["expectedGoals"], errors="coerce").fillna(0)\n    shot_source["expectedGoalsOnTarget"] = pd.to_numeric(shot_source["expectedGoalsOnTarget"], errors="coerce").fillna(0)\n\n    if "qualifiers" not in shot_source.columns:\n        shot_source["qualifiers"] = ""\n\n    shot_source["isBigChance"] = _flag_mask(shot_source, "isBigChance") | _mask_contains(shot_source, "BigChance")\n    shot_source["isOwnGoal"] = _flag_mask(shot_source, "isOwnGoal") | _mask_contains(shot_source, "OwnGoal")\n\n    for coord_col in ["x", "y"]:\n        if coord_col not in shot_source.columns:\n            shot_source[coord_col] = np.nan\n        shot_source[coord_col] = pd.to_numeric(shot_source[coord_col], errors="coerce")\n\n    if shot_source["x"].isna().all():\n        if "shot_side_365" in shot_source.columns:\n            shot_source["x"] = pd.to_numeric(shot_source["shot_side_365"], errors="coerce") * 1.05\n        elif "side" in shot_source.columns:\n            shot_source["x"] = pd.to_numeric(shot_source["side"], errors="coerce") * 1.05\n\n    if shot_source["y"].isna().all():\n        if "shot_line_365" in shot_source.columns:\n            shot_source["y"] = pd.to_numeric(shot_source["shot_line_365"], errors="coerce") * 0.68\n        elif "line" in shot_source.columns:\n            shot_source["y"] = pd.to_numeric(shot_source["line"], errors="coerce") * 0.68\n\n    shot_source = shot_source[shot_source["type"].isin(visual_types)].copy()\n    shot_source = shot_source.dropna(subset=["x", "y"]).copy()\n    return shot_source\n\n\ndef _resolve_shots_player_name(pname, shot_source, team_name=None):\n    candidates_df = shot_source[["playerName"] + (["teamName"] if "teamName" in shot_source.columns else [])].dropna().drop_duplicates()\n\n    if team_name is not None and "teamName" in candidates_df.columns:\n        team_candidates = candidates_df[candidates_df["teamName"] == team_name]\n        if not team_candidates.empty:\n            candidates_df = team_candidates\n\n    if candidates_df.empty:\n        return pname, 0\n\n    candidates_df = candidates_df.copy()\n    candidates_df["_match_score"] = candidates_df["playerName"].apply(lambda candidate: _name_match_score(pname, candidate))\n    best_idx = candidates_df["_match_score"].idxmax()\n    best_score = candidates_df.loc[best_idx, "_match_score"]\n    best_name = candidates_df.loc[best_idx, "playerName"]\n\n    if best_score < 0.72:\n        return pname, best_score\n    return best_name, best_score\n\n\ndef _shot_size(data, base=130, scale=1200, max_size=950):\n    if data.empty:\n        return []\n    xg = pd.to_numeric(data["expectedGoals"], errors="coerce").fillna(0)\n    return (base + (xg * scale)).clip(lower=base, upper=max_size)\n\n\ndef _open_play_shots_count(shots, pname):\n    if shots.empty:\n        return 0\n\n    direct_masks = []\n    if "isRegularPlay" in shots.columns:\n        direct_masks.append(_flag_mask(shots, "isRegularPlay"))\n    if "RegularPlay" in shots.columns:\n        direct_masks.append(_flag_mask(shots, "RegularPlay"))\n    if "situation" in shots.columns:\n        direct_masks.append(shots["situation"].fillna("").astype(str).str.contains("regular|open", case=False, regex=True, na=False))\n    if "playType" in shots.columns:\n        direct_masks.append(shots["playType"].fillna("").astype(str).str.contains("regular|open", case=False, regex=True, na=False))\n\n    qualifier_mask = _mask_contains(shots, "RegularPlay|OpenPlay")\n    if qualifier_mask.any():\n        direct_masks.append(qualifier_mask)\n\n    if direct_masks:\n        combined = pd.Series(False, index=shots.index)\n        for mask in direct_masks:\n            combined = combined | mask\n        return int(combined.sum())\n\n    if "df" in globals() and "name" in df.columns:\n        event_shots = df[\n            (df["name"] == pname) &\n            (df["type"].isin(["Goal", "SavedShot", "MissedShots", "BlockedShot", "ShotOnPost"]))\n        ].copy()\n        if not event_shots.empty:\n            event_open_play = _flag_mask(event_shots, "isRegularPlay") | _mask_contains(event_shots, "RegularPlay|OpenPlay")\n            return int(event_open_play.sum())\n\n    return 0\n\n\ndef Individual_ShotMap(ax, pname):\n    pitch = Pitch(\n        pitch_type="uefa",\n        corner_arcs=True,\n        pitch_color=bg_color,\n        line_color=line_color,\n        linewidth=2\n    )\n    pitch.draw(ax=ax)\n    ax.set_xlim(-0.5, 105.5)\n    ax.set_ylim(-0.5, 68.5)\n    ax.set_facecolor(bg_color)\n\n    shot_source = _prepare_individual_shot_source()\n    player_team = _player_team_from_events(pname)\n    matched_player_name, match_score = _resolve_shots_player_name(pname, shot_source, player_team)\n\n    shots = shot_source[shot_source["playerName"] == matched_player_name].copy()\n    if player_team is not None and "teamName" in shots.columns:\n        team_shots = shots[shots["teamName"] == player_team].copy()\n        if not team_shots.empty:\n            shots = team_shots\n\n    goal = shots[(shots["type"] == "Goal") & (~shots["isBigChance"]) & (~shots["isOwnGoal"])].copy()\n    miss = shots[(shots["type"] == "MissedShots") & (~shots["isBigChance"])].copy()\n    save = shots[(shots["type"] == "SavedShot") & (~shots["isBigChance"])].copy()\n    blok = shots[(shots["type"] == "BlockedShot") & (~shots["isBigChance"])].copy()\n    post = shots[(shots["type"] == "ShotOnPost") & (~shots["isBigChance"])].copy()\n\n    goal_bc = shots[(shots["type"] == "Goal") & (shots["isBigChance"]) & (~shots["isOwnGoal"])].copy()\n    miss_bc = shots[(shots["type"] == "MissedShots") & (shots["isBigChance"])].copy()\n    save_bc = shots[(shots["type"] == "SavedShot") & (shots["isBigChance"])].copy()\n    blok_bc = shots[(shots["type"] == "BlockedShot") & (shots["isBigChance"])].copy()\n    post_bc = shots[(shots["type"] == "ShotOnPost") & (shots["isBigChance"])].copy()\n\n    inside_box = (\n        (pd.to_numeric(shots["x"], errors="coerce") >= 88.5) &\n        (pd.to_numeric(shots["y"], errors="coerce") >= 13.6) &\n        (pd.to_numeric(shots["y"], errors="coerce") <= 54.4)\n    )\n    out_box = shots[~inside_box].copy()\n\n    shot_distances = np.sqrt((shots["x"] - 105) ** 2 + (shots["y"] - 34) ** 2)\n    avg_dist = round(shot_distances.mean(), 2) if len(shot_distances) > 0 else 0\n    xG = round(shots["expectedGoals"].sum(), 2)\n    xGOT = round(shots["expectedGoalsOnTarget"].sum(), 2)\n    xG_per_shot = round(xG / len(shots), 2) if len(shots) > 0 else 0\n\n    def _plot_shots(data, marker, edgecolor, facecolor="None", hatch=None, zorder=3, base=130, scale=1200, linewidth=1.5, alpha=1):\n        if data.empty:\n            return\n        pitch.scatter(\n            data.x,\n            data.y,\n            s=_shot_size(data, base=base, scale=scale),\n            marker=marker,\n            c=facecolor,\n            edgecolors=edgecolor,\n            hatch=hatch,\n            linewidths=linewidth,\n            alpha=alpha,\n            zorder=zorder,\n            ax=ax\n        )\n\n    _plot_shots(goal, "football", "green", base=200, scale=1200, zorder=8, linewidth=1)\n    _plot_shots(post, "o", hcol, hatch="+++", base=150, scale=1100, zorder=5)\n    _plot_shots(blok, "o", hcol, hatch="/////", base=150, scale=1100, zorder=5)\n    _plot_shots(save, "o", line_color, facecolor=hcol, base=130, scale=1100, zorder=4, alpha=0.75)\n    _plot_shots(miss, "o", hcol, base=130, scale=1100, zorder=3)\n\n    _plot_shots(goal_bc, "football", "green", base=300, scale=1300, zorder=10, linewidth=1)\n    _plot_shots(post_bc, "o", hcol, hatch="+++", base=240, scale=1200, zorder=7, linewidth=2)\n    _plot_shots(blok_bc, "o", hcol, hatch="/////", base=240, scale=1200, zorder=7, linewidth=2)\n    _plot_shots(save_bc, "o", line_color, facecolor=hcol, base=240, scale=1200, zorder=8, linewidth=2, alpha=0.75)\n    _plot_shots(miss_bc, "o", hcol, base=210, scale=1200, zorder=7, linewidth=2)\n\n    yhalf = [-0.5, -0.5, 68.5, 68.5]\n    xhalf = [-0.5, 52.5, 52.5, -0.5]\n    ax.fill(xhalf, yhalf, bg_color, alpha=1, zorder=20)\n\n    pitch.scatter(2, 56 - (0 * 4), s=200, marker="football", c="None", edgecolors="green", zorder=25, ax=ax)\n    pitch.scatter(2, 56 - (1 * 4), s=150, marker="o", c="None", edgecolors=hcol, hatch="+++", zorder=25, ax=ax)\n    pitch.scatter(2, 56 - (2 * 4), s=150, marker="o", c=hcol, edgecolors=line_color, zorder=25, ax=ax)\n    pitch.scatter(2, 56 - (3 * 4), s=130, marker="o", c="None", edgecolors=hcol, zorder=25, ax=ax)\n    pitch.scatter(2, 56 - (4 * 4), s=130, marker="o", c="None", edgecolors=hcol, hatch="/////", zorder=25, ax=ax)\n\n    open_play_shots = _open_play_shots_count(shots, pname)\n    goals_count = len(goal) + len(goal_bc)\n    posts_count = len(post) + len(post_bc)\n    saves_count = len(save) + len(save_bc)\n    misses_count = len(miss) + len(miss_bc)\n    blocks_count = len(blok) + len(blok_bc)\n    shots_on_target = goals_count + saves_count\n    big_chances = len(goal_bc) + len(miss_bc) + len(save_bc) + len(blok_bc) + len(post_bc)\n    big_chances_missed = len(miss_bc) + len(save_bc) + len(blok_bc) + len(post_bc)\n\n    ax.text(0, 71, "Datos", color=line_color, fontsize=25, fontweight="bold", zorder=30)\n    ax.text(7, 64 - (0 * 4), f"Remates: {len(shots)}", fontsize=15, ha="left", va="center", color=line_color, zorder=30)\n    ax.text(7, 64 - (1 * 4), f"Open-play remates: {open_play_shots}", fontsize=15, ha="left", va="center", color=line_color, zorder=30)\n    ax.text(7, 64 - (2 * 4), f"Goles: {goals_count}", fontsize=15, ha="left", va="center", color=line_color, zorder=30)\n    ax.text(7, 64 - (3 * 4), f"Remates al palo: {posts_count}", fontsize=15, ha="left", va="center", color=line_color, zorder=30)\n    ax.text(7, 64 - (4 * 4), f"Al arco: {shots_on_target}", fontsize=15, ha="left", va="center", color=line_color, zorder=30)\n    ax.text(7, 64 - (5 * 4), f"Desvíados: {misses_count}", fontsize=15, ha="left", va="center", color=line_color, zorder=30)\n    ax.text(7, 64 - (6 * 4), f"Bloqueados: {blocks_count}", fontsize=15, ha="left", va="center", color=line_color, zorder=30)\n    ax.text(7, 64 - (7 * 4), f"Grandes oportunidades: {big_chances}", fontsize=15, ha="left", va="center", color=line_color, zorder=30)\n    ax.text(7, 64 - (8 * 4), f"Fuera del área: {len(out_box)}", fontsize=15, ha="left", va="center", color=line_color, zorder=30)\n    ax.text(7, 64 - (9 * 4), f"Dentro del área: {len(shots) - len(out_box)}", fontsize=15, ha="left", va="center", color=line_color, zorder=30)\n    ax.text(7, 64 - (10 * 4), f"Dist. promedio: {avg_dist}m", fontsize=15, ha="left", va="center", color=line_color, zorder=30)\n    ax.text(7, 64 - (11 * 4), f"xG: {xG}", fontsize=15, ha="left", va="center", color=line_color, zorder=30)\n    ax.text(7, 64 - (12 * 4), f"xGOT: {xGOT}", fontsize=15, ha="left", va="center", color=line_color, zorder=30)\n\n    ax.text(80, 71, "Mapa de remates", color=line_color, fontsize=25, fontweight="bold", ha="center", zorder=30)\n\n    if shots.empty:\n        ax.text(78.75, 34, "Sin remates registrados", color=line_color, fontsize=18, ha="center", va="center", zorder=30)\n\n    return {\n        "Player_Name": pname,\n        "Matched_Shots_Player_Name": matched_player_name,\n        "Name_Match_Score": round(match_score, 2),\n        "Team_Name": player_team,\n        "Total_Shots": len(shots),\n        "Open_Play_Shots": open_play_shots,\n        "Goals": goals_count,\n        "Shots_On_Target": shots_on_target,\n        "Shots_Off_Target": misses_count,\n        "Shots_Blocked": blocks_count,\n        "Shots_On_Post": posts_count,\n        "Big_Chances": big_chances,\n        "Big_Chances_Missed": big_chances_missed,\n        "Shots_Outside_Box": len(out_box),\n        "Shots_Inside_Box": len(shots) - len(out_box),\n        "Average_Shot_Distance": avg_dist,\n        "xG": xG,\n        "xGOT": xGOT,\n        "xG_per_Shot": xG_per_shot\n    }\n\n\ndef individual_passes_recieved(ax, pname):\n    pitch = Pitch(\n        pitch_type="uefa",\n        corner_arcs=True,\n        pitch_color=bg_color,\n        line_color=line_color,\n        linewidth=2\n    )\n    pitch.draw(ax=ax)\n    ax.set_xlim(-0.5, 105.5)\n    ax.set_ylim(-0.5, 68.5)\n    ax.set_facecolor(bg_color)\n\n    dfp_events = df[df["type"] != "Carry"].copy().reset_index(drop=True)\n\n    for coord_col in ["x", "y", "endX", "endY"]:\n        if coord_col in dfp_events.columns:\n            dfp_events[coord_col] = pd.to_numeric(dfp_events[coord_col], errors="coerce")\n\n    received_by_player = dfp_events["name"].shift(-1).eq(pname)\n    dfp = dfp_events[\n        (dfp_events["type"] == "Pass") &\n        (dfp_events["outcomeType"] == "Successful") &\n        received_by_player\n    ].copy()\n\n    open_play_pass = _open_play_mask(dfp)\n    dfkp = dfp[_flag_mask(dfp, "keyPass", "KeyPass") | _mask_contains(dfp, "KeyPass")].copy()\n    dfas = dfp[_flag_mask(dfp, "assist", "IntentionalGoalAssist") | _mask_contains(dfp, "IntentionalGoalAssist")].copy()\n    dfnt = dfp[pd.to_numeric(dfp["endX"], errors="coerce") >= 70].copy()\n    dfpen = dfp[\n        (pd.to_numeric(dfp["endX"], errors="coerce") >= 87.5) &\n        (pd.to_numeric(dfp["endY"], errors="coerce") >= 13.6) &\n        (pd.to_numeric(dfp["endY"], errors="coerce") <= 54.6)\n    ].copy()\n    dfpro = dfp[\n        (pd.to_numeric(dfp["x"], errors="coerce") >= 35) &\n        _progressive_pass_mask(dfp) &\n        open_play_pass\n    ].copy()\n    dfcros = dfp[\n        (_flag_mask(dfp, "isCross", "Cross") | _mask_contains(dfp, "Cross")) &\n        open_play_pass\n    ].copy()\n    dflb = dfp[_flag_mask(dfp, "isLongball", "Longball") | _mask_contains(dfp, "Longball")].copy()\n    cutback = dfp[\n        (pd.to_numeric(dfp["x"], errors="coerce") >= 88.54) &\n        (pd.to_numeric(dfp["x"], errors="coerce") <= 105) &\n        (\n            ((pd.to_numeric(dfp["y"], errors="coerce") >= 40.8) & (pd.to_numeric(dfp["y"], errors="coerce") <= 54.4)) |\n            ((pd.to_numeric(dfp["y"], errors="coerce") >= 13.6) & (pd.to_numeric(dfp["y"], errors="coerce") <= 27.2))\n        ) &\n        (pd.to_numeric(dfp["endY"], errors="coerce") >= 27.2) &\n        (pd.to_numeric(dfp["endY"], errors="coerce") <= 40.8) &\n        (pd.to_numeric(dfp["endX"], errors="coerce") >= 81.67)\n    ].copy()\n\n    next_act = dfp_events[\n        (dfp_events["name"] == pname) &\n        (dfp_events["type"].shift(1) == "Pass") &\n        (dfp_events["outcomeType"].shift(1) == "Successful")\n    ].copy()\n    ball_retain = next_act[\n        (~next_act["type"].isin(["Foul", "Dispossessed"])) &\n        (next_act["outcomeType"].fillna("Successful") == "Successful")\n    ].copy()\n    ball_retention = _safe_pct(len(ball_retain), len(next_act))\n\n    passer_col = "shortName" if "shortName" in dfp.columns else "name"\n    if len(dfp) != 0:\n        name_counts_df = (\n            dfp[passer_col]\n            .fillna("None")\n            .astype(str)\n            .value_counts()\n            .reset_index()\n        )\n        name_counts_df.columns = ["name", "count"]\n        r_name = name_counts_df.loc[0, "name"]\n        r_count = int(name_counts_df.loc[0, "count"])\n    else:\n        r_name = "None"\n        r_count = 0\n\n    xT_received = 0\n    if "xT" in dfp.columns:\n        xT_series = pd.to_numeric(dfp["xT"], errors="coerce").fillna(0)\n        xT_received = round(xT_series[xT_series >= 0].sum(), 2)\n\n    if not dfp.empty:\n        pitch.lines(dfp.x, dfp.y, dfp.endX, dfp.endY, lw=3, transparent=True, comet=True, color=hcol, ax=ax, alpha=0.5)\n        pitch.scatter(dfp.endX, dfp.endY, s=30, edgecolor=hcol, linewidth=1, color=bg_color, zorder=2, ax=ax)\n\n    if not dfkp.empty:\n        pitch.lines(dfkp.x, dfkp.y, dfkp.endX, dfkp.endY, lw=4, transparent=True, comet=True, color=violet, ax=ax, alpha=0.75)\n        pitch.scatter(dfkp.endX, dfkp.endY, s=40, edgecolor=violet, linewidth=1.5, color=bg_color, zorder=3, ax=ax)\n\n    if not dfas.empty:\n        pitch.lines(dfas.x, dfas.y, dfas.endX, dfas.endY, lw=4, transparent=True, comet=True, color="green", ax=ax, alpha=0.75)\n        pitch.scatter(dfas.endX, dfas.endY, s=50, edgecolors="green", linewidths=1, marker="football", c=bg_color, zorder=4, ax=ax)\n\n    avg_endX = dfp["endX"].median() if not dfp.empty else np.nan\n    avg_endY = dfp["endY"].median() if not dfp.empty else np.nan\n    avg_goal_line_distance = round(105 - avg_endX, 2) if not pd.isna(avg_endX) else 0\n\n    if not pd.isna(avg_endX):\n        ax.axvline(x=avg_endX, ymin=0, ymax=68, color="gray", linestyle="--", alpha=0.6, linewidth=2)\n    if not pd.isna(avg_endY):\n        ax.axhline(y=avg_endY, xmin=0, xmax=105, color="gray", linestyle="--", alpha=0.6, linewidth=2)\n\n    ax.set_title("Pases recibidos", color=line_color, fontsize=25, fontweight="bold", y=1.03)\n\n    if dfp.empty:\n        ax.text(52.5, 34, "Sin pases recibidos registrados", color=line_color, fontsize=18, ha="center", va="center")\n\n    ax_text(\n        0,\n        -3,\n        f\'\'\'<Pases: {len(dfp)}> | <Pases claves: {len(dfkp)}> | <Asistencias: {len(dfas)}> En el tercio final: {len(dfnt)} |\nEn el área rival: {len(dfpen)} Progresivos: {len(dfpro)} | Centros: {len(dfcros)} | Envíos largos: {len(dflb)}\nCentros atrás: {len(cutback)} | Retenciones: {ball_retention}% | xT de recepción: {xT_received}\nDistancia al arco rival promedio de recepción: {avg_goal_line_distance}m\nMáximo pasador: {r_name} ({r_count})\'\'\',\n        fontsize=15,\n        ha="left",\n        va="top",\n        ax=ax,\n        highlight_textprops=[{"color": hcol}, {"color": violet}, {"color": "green"}]\n    )\n\n    return {\n        "Player_Name": pname,\n        "Passes_Received": len(dfp),\n        "Key_Passes_Received": len(dfkp),\n        "Assists_Received": len(dfas),\n        "Passes_Received_Final_Third": len(dfnt),\n        "Passes_Received_Penalty_Box": len(dfpen),\n        "Progressive_Passes_Received": len(dfpro),\n        "Crosses_Received": len(dfcros),\n        "Longballs_Received": len(dflb),\n        "Cutbacks_Received": len(cutback),\n        "Ball_Retention": ball_retention,\n        "xT_Received": xT_received,\n        "Average_Distance_From_Opponent_Goal_Line": avg_goal_line_distance,\n        "Most_Passes_From": r_name,\n        "Most_Passes_From_Count": r_count\n    }\n\n\nindividual_passes_received = individual_passes_recieved\n\n# ============================================================\n# REPORTE INDIVIDUAL JUGADOR - DEFENSIVE ACTIONS\n# ============================================================\n\nif "_mask_contains" not in globals():\n    def _mask_contains(data, pattern, column="qualifiers"):\n        if column not in data.columns:\n            return pd.Series(False, index=data.index)\n        return data[column].fillna("").astype(str).str.contains(\n            pattern,\n            case=False,\n            regex=True,\n            na=False\n        )\n\n\nif "_flag_mask" not in globals():\n    def _flag_mask(data, column, fallback_pattern=None):\n        if column in data.columns:\n            serie = data[column]\n\n            if pd.api.types.is_bool_dtype(serie):\n                return serie.fillna(False)\n\n            numeric = pd.to_numeric(serie, errors="coerce")\n            if numeric.notna().any():\n                return numeric.fillna(0).ne(0)\n\n            return serie.fillna(False).astype(str).str.lower().isin(\n                ["true", "1", "yes", "y", "si", "sí"]\n            )\n\n        if fallback_pattern is not None:\n            return _mask_contains(data, fallback_pattern)\n\n        return pd.Series(False, index=data.index)\n\n\nif "_safe_pct" not in globals():\n    def _safe_pct(part, total):\n        if total == 0:\n            return 0\n        return round((part / total) * 100, 2)\n\n\ndef _add_defensive_actions_glossary(ax, y_offset=0.12, height=0.032):\n    legend_items = [\n        ("+", hcol, hcol, "Tackle W", None),\n        ("+", "gray", "gray", "Tackle L", None),\n        ("s", "None", hcol, "Interc.", "/////"),\n        ("o", "None", hcol, "Recovery", "/////"),\n        ("d", "None", hcol, "Clearance", "/////"),\n        ("x", hcol, hcol, "Foul", None),\n        ("^", "None", hcol, "Aerial W", "/////"),\n        ("^", "None", "gray", "Aerial L", "/////"),\n        ("h", "None", hcol, "Dribbled", "|||||"),\n    ]\n\n    fig = ax.figure\n    bbox = ax.get_position()\n    legend_label = f"def_actions_glossary_{id(ax)}"\n\n    for old_ax in list(fig.axes):\n        if old_ax.get_label() == legend_label:\n            old_ax.remove()\n\n    legend_y = max(0.006, bbox.y0 - y_offset)\n    legend_ax = fig.add_axes([bbox.x0, legend_y, bbox.width, height], label=legend_label)\n    legend_ax.set_facecolor(bg_color)\n    legend_ax.set_xlim(0, 1)\n    legend_ax.set_ylim(0, 1)\n    legend_ax.set_xticks([])\n    legend_ax.set_yticks([])\n\n    for spine in legend_ax.spines.values():\n        spine.set_visible(True)\n        spine.set_edgecolor(line_color)\n        spine.set_linewidth(1)\n\n    legend_ax.text(0.025, 0.5, "Glosario", color=line_color, fontsize=9.5, fontweight="bold", ha="left", va="center")\n\n    x_positions = np.linspace(0.15, 0.95, len(legend_items))\n    for x_pos, (marker, facecolor, edgecolor, label, hatch) in zip(x_positions, legend_items):\n        legend_ax.scatter(\n            x_pos,\n            0.62,\n            s=82,\n            marker=marker,\n            c=facecolor,\n            edgecolors=edgecolor,\n            linewidths=1.5,\n            hatch=hatch,\n            zorder=2\n        )\n        legend_ax.text(x_pos, 0.22, label, color=line_color, fontsize=7.5, ha="center", va="center")\n\n    return legend_ax\n\n\ndef individual_def_acts(ax, pname):\n    pitch = Pitch(\n        pitch_type="uefa",\n        corner_arcs=True,\n        pitch_color=bg_color,\n        line_color=line_color,\n        line_zorder=2,\n        linewidth=2\n    )\n    pitch.draw(ax=ax)\n    ax.set_xlim(-0.5, 105.5)\n    ax.set_ylim(-0.5, 68.5)\n    ax.set_facecolor(bg_color)\n\n    df_events = df.copy()\n    for coord_col in ["x", "y", "endX", "endY"]:\n        if coord_col in df_events.columns:\n            df_events[coord_col] = pd.to_numeric(df_events[coord_col], errors="coerce")\n\n    playerdf = df_events[df_events["name"] == pname].copy()\n\n    ball_wins = playerdf[playerdf["type"].isin(["Interception", "BallRecovery"])].copy()\n    f_third = ball_wins[ball_wins["x"] >= 70]\n    m_third = ball_wins[(ball_wins["x"] > 35) & (ball_wins["x"] < 70)]\n    d_third = ball_wins[ball_wins["x"] <= 35]\n\n    hp_tk = playerdf[playerdf["type"] == "Tackle"].copy()\n    hp_tk_u = hp_tk[hp_tk["outcomeType"] == "Unsuccessful"].copy()\n    hp_tk_w = hp_tk[hp_tk["outcomeType"] != "Unsuccessful"].copy()\n\n    hp_intc = playerdf[playerdf["type"] == "Interception"].copy()\n    hp_br = playerdf[playerdf["type"] == "BallRecovery"].copy()\n    hp_cl = playerdf[playerdf["type"] == "Clearance"].copy()\n    hp_fl = playerdf[playerdf["type"] == "Foul"].copy()\n\n    defensive_aerial = _flag_mask(playerdf, "isDefensive", "Defensive") | _flag_mask(playerdf, "Defensive") | _mask_contains(playerdf, "Defensive")\n    hp_ar = playerdf[(playerdf["type"] == "Aerial") & defensive_aerial].copy()\n    hp_ar_u = hp_ar[hp_ar["outcomeType"] == "Unsuccessful"].copy()\n    hp_ar_w = hp_ar[hp_ar["outcomeType"] != "Unsuccessful"].copy()\n\n    pass_bl = playerdf[\n        (playerdf["type"] == "BlockedPass") |\n        _flag_mask(playerdf, "isBlocked pass", "BlockedPass")\n    ].copy()\n    shot_bl = playerdf[\n        (playerdf["type"] == "Save") |\n        _flag_mask(playerdf, "isOutfielderBlock") |\n        _mask_contains(playerdf, "OutfielderBlock")\n    ].copy()\n    drb_pst = playerdf[playerdf["type"] == "Challenge"].copy()\n\n    prev_takeon_unsuccessful = (\n        (df_events["type"].shift(1) == "TakeOn") &\n        (df_events["outcomeType"].shift(1) == "Unsuccessful")\n    )\n    drb_tkl = df_events[\n        (df_events["name"] == pname) &\n        (df_events["type"] == "Tackle") &\n        prev_takeon_unsuccessful\n    ].copy()\n\n    err_lat = playerdf[_flag_mask(playerdf, "LeadingToAttempt") | _mask_contains(playerdf, "LeadingToAttempt")].copy()\n    err_lgl = playerdf[_flag_mask(playerdf, "LeadingToGoal") | _mask_contains(playerdf, "LeadingToGoal")].copy()\n\n    dan_frk = playerdf[\n        (playerdf["type"] == "Foul") &\n        (playerdf["x"] > 16.5) &\n        (playerdf["x"] < 35) &\n        (playerdf["y"] > 13.6) &\n        (playerdf["y"] < 54.4)\n    ].copy()\n\n    next_same_player = df_events["name"].shift(-1).eq(pname)\n    next_type = df_events["type"].shift(-1)\n    next_outcome = df_events["outcomeType"].shift(-1)\n    recovery_action = (\n        (df_events["name"] == pname) &\n        (df_events["type"].isin(["BallRecovery", "Interception"]))\n    )\n    retained_next_action = (\n        next_same_player &\n        (~next_type.isin(["Foul", "Dispossessed"])) &\n        (~next_outcome.eq("Unsuccessful"))\n    )\n    prbr = df_events[recovery_action & retained_next_action].copy()\n    post_rec_ball_retention = _safe_pct(len(prbr), len(hp_br) + len(hp_intc))\n\n    pitch.scatter(hp_tk_w.x, hp_tk_w.y, s=250, c=hcol, lw=2.5, edgecolor=hcol, marker="+", hatch="/////", ax=ax, zorder=4)\n    pitch.scatter(hp_tk_u.x, hp_tk_u.y, s=250, c="gray", lw=2.5, edgecolor="gray", marker="+", hatch="/////", ax=ax, zorder=5)\n    pitch.scatter(hp_intc.x, hp_intc.y, s=250, c="None", lw=2.5, edgecolor=hcol, marker="s", hatch="/////", ax=ax, zorder=4)\n    pitch.scatter(hp_br.x, hp_br.y, s=250, c="None", lw=2.5, edgecolor=hcol, marker="o", hatch="/////", ax=ax, zorder=4)\n    pitch.scatter(hp_cl.x, hp_cl.y, s=250, c="None", lw=2.5, edgecolor=hcol, marker="d", hatch="/////", ax=ax, zorder=4)\n    pitch.scatter(hp_fl.x, hp_fl.y, s=250, c=hcol, lw=2.5, edgecolor=hcol, marker="x", hatch="/////", ax=ax, zorder=4)\n    pitch.scatter(hp_ar_w.x, hp_ar_w.y, s=250, c="None", lw=2.5, edgecolor=hcol, marker="^", hatch="/////", ax=ax, zorder=4)\n    pitch.scatter(hp_ar_u.x, hp_ar_u.y, s=250, c="None", lw=2.5, edgecolor="gray", marker="^", hatch="/////", ax=ax, zorder=5)\n    pitch.scatter(drb_pst.x, drb_pst.y, s=250, c="None", lw=2.5, edgecolor=hcol, marker="h", hatch="|||||", ax=ax, zorder=4)\n\n    ax.set_title("Acciones defensivas", color=line_color, fontsize=25, fontweight="bold", y=1.03)\n\n    if playerdf.empty:\n        ax.text(52.5, 34, "Sin acciones registradas", color=line_color, fontsize=18, ha="center", va="center")\n\n    ax_text(\n        0,\n        -3,\n        f\'\'\'Entradas: {len(hp_tk)} (ganadas: {len(hp_tk_w)}) | Duelos def.: {len(drb_tkl)} (Perdidos: {len(drb_pst)}) | Intercepciones: {len(hp_intc)}\nRecuperaciones: {len(hp_br)} | Retención post-recuperación: {post_rec_ball_retention}%  | Pases bloqueados: {len(pass_bl)}\nDespejes: {len(hp_cl)} | Remates bloqueados: {len(shot_bl)} | Duelos aéreos: {len(hp_ar)} (ganados: {len(hp_ar_w)}) | Faltas: {len(hp_fl)}\nFaltas en el área: {len(dan_frk)} | Errores derivados en remate/gol: {len(err_lat)}/{len(err_lgl)}\nPosesión ganada en tercio ofensivo/medio/defensivo: {len(f_third)}/{len(m_third)}/{len(d_third)}\n\'\'\',\n        fontsize=15,\n        ha="left",\n        va="top",\n        ax=ax\n    )\n\n    _add_defensive_actions_glossary(ax)\n\n    return {\n        "Player_Name": pname,\n        "Tackles": len(hp_tk),\n        "Tackles_Won": len(hp_tk_w),\n        "Dribblers_Tackled": len(drb_tkl),\n        "Dribble_Past": len(drb_pst),\n        "Interceptions": len(hp_intc),\n        "Ball_Recoveries": len(hp_br),\n        "Post_Recovery_Ball_Retention": post_rec_ball_retention,\n        "Pass_Blocks": len(pass_bl),\n        "Clearances": len(hp_cl),\n        "Shots_Blocked": len(shot_bl),\n        "Aerial_Duels": len(hp_ar),\n        "Aerial_Duels_Won": len(hp_ar_w),\n        "Fouls": len(hp_fl),\n        "Fouls_In_Front_of_Penalty_Box": len(dan_frk),\n        "Errors_Led_to_Shot": len(err_lat),\n        "Errors_Led_to_Goal": len(err_lgl),\n        "Possession_Win_Final_Third": len(f_third),\n        "Possession_Win_Mid_Third": len(m_third),\n        "Possession_Win_Defensive_Third": len(d_third)\n    }\n\n# ============================================================\n# REPORTE INDIVIDUAL JUGADOR - PANEL FINAL\n# ============================================================\n\nimport re\nfrom difflib import SequenceMatcher\n\n\ndef _report_norm_name(value):\n    if pd.isna(value):\n        return ""\n    text = unidecode(str(value)).lower().replace(".", " ")\n    text = re.sub(r"[^a-z0-9 ]+", " ", text)\n    text = re.sub(r"\\s+", " ", text).strip()\n    return text\n\n\ndef _report_name_score(target_name, candidate_name):\n    target = _report_norm_name(target_name)\n    candidate = _report_norm_name(candidate_name)\n\n    if not target or not candidate:\n        return 0\n    if target == candidate:\n        return 1\n\n    target_parts = target.split()\n    candidate_parts = candidate.split()\n\n    if target_parts and candidate_parts and target_parts[-1] == candidate_parts[-1]:\n        target_first = target_parts[0]\n        candidate_first = candidate_parts[0]\n        if len(target_first) == 1 and candidate_first.startswith(target_first):\n            return 0.98\n        if len(candidate_first) == 1 and target_first.startswith(candidate_first):\n            return 0.98\n        return max(0.9, SequenceMatcher(None, target, candidate).ratio())\n\n    return SequenceMatcher(None, target, candidate).ratio()\n\n\ndef _matched_df_names(pname):\n    if "df" not in globals() or "name" not in df.columns:\n        return []\n\n    names = pd.Series(df["name"].dropna().unique()).astype(str)\n    if names.empty:\n        return []\n\n    exact = names[names == pname].tolist()\n    if exact:\n        return exact\n\n    scored = pd.DataFrame({"name": names})\n    scored["score"] = scored["name"].apply(lambda candidate: _report_name_score(pname, candidate))\n    scored = scored[scored["score"] >= 0.9].sort_values("score", ascending=False)\n    return scored["name"].tolist()\n\n\ndef _minute_value(data):\n    for minute_col in ["expandedMinute", "cumulative_mins", "minute", "Minutes"]:\n        if minute_col in data.columns:\n            vals = pd.to_numeric(data[minute_col], errors="coerce").dropna()\n            if not vals.empty:\n                return vals\n    return pd.Series(dtype=float)\n\n\ndef _player_report_context(pname):\n    matched_names = _matched_df_names(pname)\n    player_events = df[df["name"].isin(matched_names)].copy() if matched_names else df[df["name"] == pname].copy()\n\n    team_name = None\n    opposition_name = None\n\n    if not player_events.empty and "teamName" in player_events.columns:\n        teams = player_events["teamName"].dropna()\n        if not teams.empty:\n            team_name = teams.mode().iloc[0]\n\n    if not player_events.empty and "oppositionTeamName" in player_events.columns:\n        opponents = player_events["oppositionTeamName"].dropna()\n        if not opponents.empty:\n            opposition_name = opponents.mode().iloc[0]\n\n    if opposition_name is None and team_name is not None:\n        if "hteamName" in globals() and "ateamName" in globals():\n            if team_name == hteamName:\n                opposition_name = ateamName\n            elif team_name == ateamName:\n                opposition_name = hteamName\n\n    if opposition_name is None:\n        opposition_name = "Opponent"\n\n    return {\n        "matched_names": matched_names,\n        "player_events": player_events,\n        "team_name": team_name,\n        "opposition_name": opposition_name\n    }\n\n\ndef playing_time(pname):\n    context = _player_report_context(pname)\n    player_events = context["player_events"]\n    matched_names = context["matched_names"] or [pname]\n\n    match_minutes = _minute_value(df)\n    max_min = int(np.ceil(match_minutes.max())) if not match_minutes.empty else 90\n\n    if player_events.empty:\n        return 0\n\n    sub_on = player_events[player_events["type"] == "SubstitutionOn"].copy()\n    sub_off = player_events[player_events["type"] == "SubstitutionOff"].copy()\n\n    sub_on_minutes = _minute_value(sub_on)\n    sub_off_minutes = _minute_value(sub_off)\n\n    starter = None\n    if "players_df" in globals() and "name" in players_df.columns:\n        players_aux = players_df.copy()\n        players_aux["_match_score"] = players_aux["name"].apply(lambda candidate: max(_report_name_score(name, candidate) for name in matched_names))\n        players_aux = players_aux[players_aux["_match_score"] >= 0.9].copy()\n        if not players_aux.empty and "isFirstEleven" in players_aux.columns:\n            starter_values = players_aux["isFirstEleven"].dropna()\n            if not starter_values.empty:\n                starter = bool(starter_values.iloc[0])\n\n    if starter is None:\n        starter = sub_on_minutes.empty\n\n    if starter:\n        start_min = 0\n    elif not sub_on_minutes.empty:\n        start_min = int(np.floor(sub_on_minutes.min()))\n    else:\n        player_minutes = _minute_value(player_events)\n        start_min = int(np.floor(player_minutes.min())) if not player_minutes.empty else 0\n\n    if not sub_off_minutes.empty:\n        end_min = int(np.ceil(sub_off_minutes.min()))\n    else:\n        end_min = max_min\n\n    return int(max(0, end_min - start_min))\n\n\ndef plot_individual_player_report(pname):\n    context = _player_report_context(pname)\n    opposition_name = context["opposition_name"]\n    mins_played = playing_time(pname)\n\n    fig, axs = plt.subplots(2, 3, figsize=(35, 18), facecolor=bg_color)\n    #fig.subplots_adjust(top=1, bottom=0.12, left=0.04, right=0.98, wspace=0.08, hspace=0.42)\n\n    passmap_stats = individual_passMap(axs[0, 0], pname)\n    carry_stats = individual_carry(axs[0, 1], pname)\n    shotmap_stats = Individual_ShotMap(axs[0, 2], pname)\n\n    passes_received_stats = individual_passes_recieved(axs[1, 0], pname)\n    defensive_stats = individual_def_acts(axs[1, 1], pname)\n    heatmap_stats = heatMap(axs[1, 2], pname)\n\n    fig.text(\n        0.13,\n        0.97,\n        f"{pname}",\n        color=line_color,\n        fontsize=55,\n        fontweight="bold",\n        ha="left",\n        va="center"\n    )\n    fig.text(\n        0.13,\n        0.93,\n        f"vs. {opposition_name}  |  Minutos {mins_played}",\n        color=line_color,\n        fontsize=30,\n        ha="left",\n        va="center"\n    )\n\n    stats = {\n        "Player_Name": pname,\n        "Opposition_Team_Name": opposition_name,\n        "Minutes_Played": mins_played,\n        "PassMap": passmap_stats,\n        "Carries_TakeOns": carry_stats,\n        "ShotMap": shotmap_stats,\n        "Passes_Received": passes_received_stats,\n        "Defensive_Actions": defensive_stats,\n        "HeatMap": heatmap_stats\n    }\n\n    return fig, axs, stats\n'
+
+
+def _build_runner_code(url_365scores: str, url_scoresway: str, selenium_wait: int, headless: bool, home_color: str, away_color: str, subtitle: str, mode: str = "group", selected_players: list[str] | None = None) -> str:
+    if mode not in {"prepare", "group", "individual"}:
+        raise ValueError("mode debe ser prepare, group o individual")
+    max_cell_index = 63 if mode in {"prepare", "individual"} else FINAL_CELL_INDEX
     header = """
 import os
 os.environ.setdefault("MPLBACKEND", "Agg")
-
 import matplotlib
 matplotlib.use("Agg")
-
 try:
     from IPython.display import display
 except Exception:
@@ -7026,298 +6992,261 @@ except Exception:
         for arg in args:
             print(arg)
 """
-
     chunks = [header]
-    code_cells = _load_notebook_code_cells()
+    code_cells = _load_notebook_code_cells(max_cell_index=max_cell_index)
     total_cells = len(code_cells)
-
     for step_number, (cell_index, source) in enumerate(code_cells, start=1):
         if cell_index == 0:
-            source = _patch_first_cell(
-                source,
-                url_365scores,
-                url_scoresway,
-                home_color,
-                away_color,
-            )
-
+            source = _patch_first_cell(source, url_365scores, url_scoresway, home_color, away_color)
         source = _patch_runtime_options(source, selenium_wait, headless)
         source = _patch_report_subtitles(source, subtitle)
-
         chunks.append(f"\n# --- Notebook cell {cell_index} ---\n")
-        chunks.append(
-            f'print("{PROGRESS_MARKER}:{step_number}:{total_cells}:{cell_index}", flush=True)\n'
-        )
+        chunks.append(f'print("{PROGRESS_MARKER}:{step_number}:{total_cells}:{cell_index}", flush=True)\n')
         chunks.append(source)
         chunks.append("\n")
-
-    footer = """
+    if mode == "prepare":
+        footer = """
 from pathlib import Path
-
+import json
+names = []
+if "df" in globals() and "name" in df.columns:
+    names = sorted([str(x) for x in df["name"].dropna().unique() if str(x).lower() != "nan"])
+Path("players_for_selector.json").write_text(json.dumps(names, ensure_ascii=False), encoding="utf-8")
+print("JUGADORES_LISTOS")
+"""
+    elif mode == "individual":
+        players_literal = repr(selected_players or [])
+        footer = f"""
+from pathlib import Path
+import json
+# --- Individual report code ---
+{INDIVIDUAL_REPORT_CODE}
+SELECTED_PLAYERS = {players_literal}
+if not SELECTED_PLAYERS:
+    raise ValueError("No se seleccionaron jugadores para el reporte individual.")
+Path("individual_reports").mkdir(exist_ok=True)
+individual_outputs = []
+individual_stats = {{}}
+for pname in SELECTED_PLAYERS:
+    print(f"Generando reporte individual: {{pname}}", flush=True)
+    fig, axs, stats = plot_individual_player_report(pname)
+    safe_name = re.sub(r"[^A-Za-z0-9ÁÉÍÓÚáéíóúÑñ_ -]+", "", str(pname)).strip()
+    safe_name = re.sub(r"\s+", "_", safe_name) or "jugador"
+    out_name = f"Individual_{{safe_name}}.png"
+    out_path = Path("individual_reports") / out_name
+    fig.savefig(out_path, dpi=180, bbox_inches="tight")
+    plt.close(fig)
+    individual_outputs.append(str(out_path))
+    individual_stats[pname] = stats
+Path("individual_reports.json").write_text(json.dumps(individual_outputs, ensure_ascii=False), encoding="utf-8")
+Path("individual_stats.json").write_text(json.dumps(individual_stats, ensure_ascii=False, default=str, indent=2), encoding="utf-8")
+print("REPORTES_INDIVIDUALES_LISTOS")
+"""
+    else:
+        footer = """
+from pathlib import Path
 missing_reports = [name for name in ("Match_Report_1.png", "Match_Report.png") if not Path(name).exists()]
 if missing_reports:
     raise FileNotFoundError(f"No se generaron los reportes esperados: {missing_reports}")
-
 print("REPORTES_LISTOS")
 """
     chunks.append(footer)
-
     return "".join(chunks)
 
 
 def _prepare_workdir() -> Path:
     workdir = Path(tempfile.mkdtemp(prefix="scoresway_reports_"))
-
     for name in RESOURCE_FILES:
         encoded = EMBEDDED_RESOURCE_FILES_B64.get(name)
         if not encoded:
             raise FileNotFoundError(f"No esta embebido el archivo auxiliar: {name}")
         (workdir / name).write_bytes(base64.b64decode(encoded))
-
     return workdir
 
 
-def _run_report_job(
-    url_365scores: str,
-    url_scoresway: str,
-    selenium_wait: int,
-    headless: bool,
-    home_color: str,
-    away_color: str,
-    subtitle: str,
-    log_placeholder,
-    progress_bar,
-    progress_text,
-) -> Path:
+def _run_report_job(url_365scores: str, url_scoresway: str, selenium_wait: int, headless: bool, home_color: str, away_color: str, subtitle: str, log_placeholder, progress_bar, progress_text, mode: str = "group", selected_players: list[str] | None = None) -> Path:
     workdir = _prepare_workdir()
     runner_path = workdir / "_scoresway_report_runner.py"
-    runner_path.write_text(
-        _build_runner_code(
-            url_365scores,
-            url_scoresway,
-            selenium_wait,
-            headless,
-            home_color,
-            away_color,
-            subtitle,
-        ),
-        encoding="utf-8",
-    )
-
-    process = subprocess.Popen(
-        [sys.executable, "-u", str(runner_path)],
-        cwd=workdir,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-    )
-
+    runner_path.write_text(_build_runner_code(url_365scores, url_scoresway, selenium_wait, headless, home_color, away_color, subtitle, mode=mode, selected_players=selected_players), encoding="utf-8")
+    process = subprocess.Popen([sys.executable, "-u", str(runner_path)], cwd=workdir, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
     output_lines: list[str] = []
-    progress_bar.progress(0)
-    progress_text.caption("Inicializando generacion...")
-
+    progress_bar.progress(0); progress_text.caption("Inicializando generacion...")
     assert process.stdout is not None
     for line in process.stdout:
         stripped_line = line.strip()
-
         if stripped_line.startswith(f"{PROGRESS_MARKER}:"):
             try:
                 _, step_number, total_cells, cell_index = stripped_line.split(":")
-                step_number_int = int(step_number)
-                total_cells_int = int(total_cells)
-                cell_index_int = int(cell_index)
-                progress = min(step_number_int / total_cells_int, 0.99)
-                progress_bar.progress(progress)
-                progress_text.caption(_progress_label_for_cell(cell_index_int))
+                progress_bar.progress(min(int(step_number) / int(total_cells), 0.99))
+                progress_text.caption(_progress_label_for_cell(int(cell_index)))
             except ValueError:
                 pass
             continue
-
         output_lines.append(line)
         log_placeholder.code("".join(output_lines[-120:]), language="text")
-
     return_code = process.wait()
     if return_code != 0:
         shutil.rmtree(workdir, ignore_errors=True)
-        raise RuntimeError(
-            "La ejecucion del notebook fallo.\n\n"
-            + "".join(output_lines[-160:])
-        )
-
-    progress_bar.progress(1.0)
-    progress_text.caption("Reportes listos.")
-
+        raise RuntimeError("La ejecucion del notebook fallo.\n\n" + "".join(output_lines[-160:]))
+    progress_bar.progress(1.0); progress_text.caption("Listo.")
     return workdir
 
 
-def _collect_report_bytes(workdir: Path) -> dict[str, bytes]:
+def _is_scoresway_network_capture_error(exc: Exception) -> bool:
+    message = str(exc)
+    return "api.performfeeds.com/soccerdata" in message and "No se encontr" in message
+
+
+def _run_report_job_with_retry(url_365scores: str, url_scoresway: str, selenium_wait: int, headless: bool, home_color: str, away_color: str, subtitle: str, log_placeholder, progress_bar, progress_text, mode: str = "group", selected_players: list[str] | None = None) -> Path:
+    try:
+        return _run_report_job(url_365scores, url_scoresway, selenium_wait, headless, home_color, away_color, subtitle, log_placeholder, progress_bar, progress_text, mode=mode, selected_players=selected_players)
+    except RuntimeError as exc:
+        if not _is_scoresway_network_capture_error(exc):
+            raise
+        log_placeholder.warning("Scoresway no expuso los endpoints en el primer intento. Reintentando con Chrome NO-headless via Xvfb y mas tiempo de espera...")
+        return _run_report_job(url_365scores, url_scoresway, max(selenium_wait + 12, 35), False, home_color, away_color, subtitle, log_placeholder, progress_bar, progress_text, mode=mode, selected_players=selected_players)
+
+
+def _pngs_to_pdf_bytes(png_items: list[tuple[str, bytes]]) -> bytes:
+    images = [Image.open(io.BytesIO(data)).convert("RGB") for _, data in png_items]
+    if not images:
+        return b""
+    buffer = io.BytesIO()
+    images[0].save(buffer, format="PDF", save_all=True, append_images=images[1:])
+    return buffer.getvalue()
+
+
+def _zip_pngs(png_items: list[tuple[str, bytes]]) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for filename, data in png_items:
+            zf.writestr(filename, data)
+    return buffer.getvalue()
+
+
+def _collect_group_report_bytes(workdir: Path) -> dict[str, bytes]:
     try:
         return {name: (workdir / name).read_bytes() for name in REPORT_FILES}
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 
 
-def _is_scoresway_network_capture_error(exc: Exception) -> bool:
-    message = str(exc)
-    return (
-        "api.performfeeds.com/soccerdata" in message
-        and "No se encontr" in message
-    )
-
-
-def _run_report_job_with_retry(
-    url_365scores: str,
-    url_scoresway: str,
-    selenium_wait: int,
-    headless: bool,
-    home_color: str,
-    away_color: str,
-    subtitle: str,
-    log_placeholder,
-    progress_bar,
-    progress_text,
-) -> Path:
+def _collect_prepare_players(workdir: Path) -> list[str]:
     try:
-        return _run_report_job(
-            url_365scores=url_365scores,
-            url_scoresway=url_scoresway,
-            selenium_wait=selenium_wait,
-            headless=headless,
-            home_color=home_color,
-            away_color=away_color,
-            subtitle=subtitle,
-            log_placeholder=log_placeholder,
-            progress_bar=progress_bar,
-            progress_text=progress_text,
-        )
-    except RuntimeError as exc:
-        if not _is_scoresway_network_capture_error(exc):
-            raise
-
-        log_placeholder.warning(
-            "Scoresway no expuso los endpoints en el primer intento. "
-            "Reintentando con Chrome NO-headless via Xvfb y mas tiempo de espera..."
-        )
-
-        return _run_report_job(
-            url_365scores=url_365scores,
-            url_scoresway=url_scoresway,
-            selenium_wait=max(selenium_wait + 12, 35),
-            headless=False,
-            home_color=home_color,
-            away_color=away_color,
-            subtitle=subtitle,
-            log_placeholder=log_placeholder,
-            progress_bar=progress_bar,
-            progress_text=progress_text,
-        )
+        path = workdir / "players_for_selector.json"
+        if not path.exists():
+            raise FileNotFoundError("No se genero players_for_selector.json")
+        return json.loads(path.read_text(encoding="utf-8"))
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
 
 
-def _show_reports(reports: dict[str, bytes]) -> None:
-    st.success("Reportes generados.")
+def _collect_individual_report_bytes(workdir: Path) -> dict[str, bytes]:
+    try:
+        manifest_path = workdir / "individual_reports.json"
+        if not manifest_path.exists():
+            raise FileNotFoundError("No se genero individual_reports.json")
+        paths = json.loads(manifest_path.read_text(encoding="utf-8"))
+        return {Path(p).name: (workdir / p).read_bytes() for p in paths}
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
 
-    tab_1, tab_2 = st.tabs(["Reporte 1", "Reporte 2"])
 
+def _show_group_reports(reports: dict[str, bytes]) -> None:
+    st.success("Reporte grupal generado.")
+    items = [("Match_Report_1.png", reports["Match_Report_1.png"]), ("Match_Report.png", reports["Match_Report.png"])]
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.download_button("Descargar PDF unido", data=_pngs_to_pdf_bytes(items), file_name="Match_Report_completo.pdf", mime="application/pdf")
+    with col_b:
+        st.download_button("Descargar PNGs en ZIP", data=_zip_pngs(items), file_name="Match_Report_paginas_png.zip", mime="application/zip")
+    tab_1, tab_2 = st.tabs(["Hoja 1", "Hoja 2"])
     with tab_1:
-        image_bytes = reports["Match_Report_1.png"]
-        st.image(image_bytes, use_container_width=True)
-        st.download_button(
-            "Descargar página 1",
-            data=image_bytes,
-            file_name="Match_Report_1.png",
-            mime="image/png",
-        )
-
+        st.image(reports["Match_Report_1.png"], use_container_width=True)
+        st.download_button("Descargar hoja 1 PNG", data=reports["Match_Report_1.png"], file_name="Match_Report_1.png", mime="image/png")
     with tab_2:
-        image_bytes = reports["Match_Report.png"]
-        st.image(image_bytes, use_container_width=True)
-        st.download_button(
-            "Descargar página 2",
-            data=image_bytes,
-            file_name="Match_Report.png",
-            mime="image/png",
-        )
+        st.image(reports["Match_Report.png"], use_container_width=True)
+        st.download_button("Descargar hoja 2 PNG", data=reports["Match_Report.png"], file_name="Match_Report.png", mime="image/png")
+
+
+def _show_individual_reports(reports: dict[str, bytes]) -> None:
+    st.success("Reporte/s individual/es generado/s.")
+    items = list(reports.items())
+    if len(items) > 1:
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.download_button("Descargar PDF con todos", data=_pngs_to_pdf_bytes(items), file_name="Reportes_individuales.pdf", mime="application/pdf")
+        with col_b:
+            st.download_button("Descargar PNGs en ZIP", data=_zip_pngs(items), file_name="Reportes_individuales_png.zip", mime="application/zip")
+    tabs = st.tabs([name.replace("Individual_", "").replace(".png", "") for name, _ in items])
+    for tab, (filename, data) in zip(tabs, items):
+        with tab:
+            st.image(data, use_container_width=True)
+            st.download_button(f"Descargar {filename}", data=data, file_name=filename, mime="image/png")
+
+
+def _run_ui_job(mode: str, url_365scores: str, url_scoresway: str, headless: bool, home_color: str, away_color: str, subtitle: str, selected_players: list[str] | None = None):
+    with st.expander("Ver ejecucion del notebook", expanded=False):
+        log_placeholder = st.empty()
+    progress_bar = st.progress(0); progress_text = st.empty()
+    with st.status("Generando...", expanded=False) as status:
+        try:
+            workdir = _run_report_job_with_retry(url_365scores=url_365scores.strip(), url_scoresway=url_scoresway.strip(), selenium_wait=DEFAULT_SELENIUM_WAIT, headless=headless, home_color=home_color, away_color=away_color, subtitle=subtitle.strip() or "Jornada | Torneo | Reporte", log_placeholder=log_placeholder, progress_bar=progress_bar, progress_text=progress_text, mode=mode, selected_players=selected_players)
+        except Exception as exc:
+            status.update(label="Fallo la generacion", state="error", expanded=False)
+            st.exception(exc)
+            return None
+        status.update(label="Listo", state="complete", expanded=False)
+        return workdir
 
 
 def main() -> None:
-    st.set_page_config(page_title="Reportes colectivos", layout="wide")
-
-    st.title("Reportes colectivos con data de eventing")
-    st.markdown(APP_EXPLANATORY_TEXT)
+    st.set_page_config(page_title="Reportes Scoresway", layout="wide")
+    st.title("Reportes con data de eventing")
+    st.markdown(APP_EXPLANATORY_TEXT.replace("Genera y descarga los dos reportes colectivos.", "Elegí reporte grupal o individual y descargalo en PDF o PNG."))
     st.markdown(TEXTO)
-
-    url_365scores = st.text_input(
-        "Link 365Scores",
-        placeholder="https://www.365scores.com/es/football/match/liga-profesional-72/argentinos-juniors-lanus-869-871-72#id=4710402",
-    )
-    url_scoresway = st.text_input(
-        "Link Scoresway",
-        placeholder="https://www.scoresway.com/en_GB/soccer/liga-profesional-argentina-2026/8v84l9nq3d5t0j4gb781i3llg/match/view/bgxpwu2xbgue9v5iutmqtwnx0/match-summary",
-    )
-
+    url_365scores = st.text_input("Link 365Scores", placeholder="https://www.365scores.com/es/football/match/liga-profesional-72/argentinos-juniors-lanus-869-871-72#id=4710402")
+    url_scoresway = st.text_input("Link Scoresway", placeholder="https://www.scoresway.com/en_GB/soccer/liga-profesional-argentina-2026/8v84l9nq3d5t0j4gb781i3llg/match/view/bgxpwu2xbgue9v5iutmqtwnx0/match-summary")
     col_1, col_2, col_3 = st.columns([1, 1, 1])
     with col_1:
         home_color = st.color_picker("Color local", "#ff4b44")
     with col_2:
         away_color = st.color_picker("Color visitante", "#00a0de")
     with col_3:
-        headless = st.toggle(
-            "Chrome headless",
-            value=False,
-            help="Dejalo apagado en Streamlit Cloud: usa Xvfb para correr Chrome como no-headless."
-        )
-
-    subtitle = st.text_input(
-        "Subtitulo",
-        value="Jornada | Torneo | Reporte",
-        placeholder="Jornada | Torneo | Reporte",
-    )
-
-    if "last_reports" in st.session_state:
-        _show_reports(st.session_state["last_reports"])
-
-    if not st.button("Generar reportes", type="primary"):
-        return
-
+        headless = st.toggle("Chrome headless", value=False, help="Dejalo apagado en Streamlit Cloud: usa Xvfb para correr Chrome como no-headless.")
+    subtitle = st.text_input("Subtitulo", value="Jornada | Torneo | Reporte", placeholder="Jornada | Torneo | Reporte")
     errors = _validate_inputs(url_365scores, url_scoresway)
     if errors:
         for error in errors:
-            st.error(error)
-        return
-
-    with st.expander("Ver ejecucion del notebook", expanded=False):
-        log_placeholder = st.empty()
-
-    progress_bar = st.progress(0)
-    progress_text = st.empty()
-
-    with st.status("Generando reportes...", expanded=False) as status:
-        try:
-            workdir = _run_report_job_with_retry(
-                url_365scores=url_365scores.strip(),
-                url_scoresway=url_scoresway.strip(),
-                selenium_wait=DEFAULT_SELENIUM_WAIT,
-                headless=headless,
-                home_color=home_color,
-                away_color=away_color,
-                subtitle=subtitle.strip() or "Jornada | Torneo | Reporte",
-                log_placeholder=log_placeholder,
-                progress_bar=progress_bar,
-                progress_text=progress_text,
-            )
-            reports = _collect_report_bytes(workdir)
-        except Exception as exc:
-            status.update(label="Fallo la generacion", state="error", expanded=False)
-            st.exception(exc)
-            return
-
-        status.update(label="Listo", state="complete", expanded=False)
-        st.session_state["last_reports"] = reports
-
-    _show_reports(reports)
-
-    
+            st.warning(error)
+        st.stop()
+    modalidad = st.radio("Tipo de reporte", ["Grupal", "Individual"], horizontal=True)
+    if modalidad == "Individual":
+        st.info("Primero cargá los datos del partido para poblar el selector de jugadores. Después elegís uno o varios jugadores y generás sus paneles.")
+        if st.button("Cargar datos y jugadores", type="secondary"):
+            workdir = _run_ui_job("prepare", url_365scores, url_scoresway, headless, home_color, away_color, subtitle)
+            if workdir is not None:
+                st.session_state["players_for_selector"] = _collect_prepare_players(workdir)
+                st.success(f"Jugadores cargados: {len(st.session_state['players_for_selector'])}")
+        players = st.session_state.get("players_for_selector", [])
+        selected_players = st.multiselect("Jugador/es", options=players, placeholder="Seleccioná uno o varios jugadores")
+        if st.button("Generar reporte individual", type="primary", disabled=not selected_players):
+            workdir = _run_ui_job("individual", url_365scores, url_scoresway, headless, home_color, away_color, subtitle, selected_players=selected_players)
+            if workdir is not None:
+                reports = _collect_individual_report_bytes(workdir)
+                st.session_state["last_individual_reports"] = reports
+                _show_individual_reports(reports)
+        elif "last_individual_reports" in st.session_state:
+            _show_individual_reports(st.session_state["last_individual_reports"])
+    else:
+        if st.button("Generar reporte grupal", type="primary"):
+            workdir = _run_ui_job("group", url_365scores, url_scoresway, headless, home_color, away_color, subtitle)
+            if workdir is not None:
+                reports = _collect_group_report_bytes(workdir)
+                st.session_state["last_group_reports"] = reports
+                _show_group_reports(reports)
+        elif "last_group_reports" in st.session_state:
+            _show_group_reports(st.session_state["last_group_reports"])
 
 
 if __name__ == "__main__":
