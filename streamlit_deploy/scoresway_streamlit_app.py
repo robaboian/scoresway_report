@@ -7278,13 +7278,13 @@ def _run_ui_job(mode: str, url_365scores: str, url_scoresway: str, headless: boo
 
 
 def main() -> None:
-    st.set_page_config(page_title="Reportes Scoresway", layout="wide")
+    st.set_page_config(page_title="Reportes de eventing", layout="wide")
     st.title("Reportes con data de eventing")
     st.markdown(APP_EXPLANATORY_TEXT.replace("Genera y descarga los dos reportes colectivos.", "Elegí reporte grupal o individual y descargalo en PDF o PNG."))
     st.markdown(TEXTO)
 
     es_copa_argentina = st.toggle(
-        "¿Es un partido de Copa Argentina / sin datos de 365Scores?",
+        "¿Es un partido de Copa Argentina?",
         value=False,
         help="Si está activado, la app no pide ni consulta 365Scores. Usa únicamente Scoresway y deja xG/xGOT/remates 365 en cero."
     )
